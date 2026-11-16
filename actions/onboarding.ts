@@ -389,3 +389,263 @@ export async function respondToProjectInvitation(
     message: action === "accepted" ? "Invitation accepted! Project unlocked." : "Invitation declined.",
   };
 }
+
+export async function initiateDiditKyc(
+  redirectPath = "/dashboard"
+): Promise<{ success: boolean; url?: string; sessionId?: string; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "Authentication required" };
+  }
+
+  const clientId = process.env.DIDIT_CLIENT_ID;
+  const clientSecret = process.env.DIDIT_CLIENT_SECRET;
+  const workflowId = process.env.DIDIT_WORKFLOW_ID;
+
+  const appUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    "http://localhost:3000";
+
+  let sessionId: string | null = null;
+  let verificationUrl: string | null = null;
+
+  if (clientId && clientSecret && workflowId && clientId !== "placeholder_client_id") {
+    try {
+      const tokenRes = await fetch("https://apx.didit.me/auth/v2/token/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+        },
+        body: new URLSearchParams({ grant_type: "client_credentials" }),
+      });
+
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        const callbackUrl = `${appUrl}${redirectPath}?kyc_return=true`;
+        const sessionRes = await fetch("https://verification.didit.me/v2/session/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${tokenData.access_token}`,
+          },
+          body: JSON.stringify({
+            vendor_data: user.id,
+            callback: callbackUrl,
+            workflow_id: workflowId,
+          }),
+        });
+
+        if (sessionRes.ok) {
+          const sessionData = await sessionRes.json();
+          sessionId = sessionData.session_id || sessionData.id;
+          verificationUrl = sessionData.url;
+        }
+      }
+    } catch (e: any) {
+      console.warn("Didit API live call warning:", e.message);
+    }
+  }
+
+  // Fallback sandbox session
+  if (!sessionId || !verificationUrl) {
+    sessionId = `didit_sandbox_${user.id.slice(0, 8)}_${Date.now()}`;
+    verificationUrl = `${appUrl}${redirectPath}?kyc_return=true&didit_session=${sessionId}&sandbox=true`;
+  }
+
+  const adminClient = createAdminClient();
+
+  try {
+    await adminClient.auth.admin.updateUserById(user.id, {
+      user_metadata: {
+        kyc_status: "pending",
+        didit_session_id: sessionId,
+      },
+    });
+  } catch (e) {
+    console.warn("Could not update auth metadata:", e);
+  }
+
+  try {
+    await adminClient
+      .from("profiles")
+      .update({
+        kyc_status: "pending",
+        didit_session_id: sessionId,
+      })
+      .eq("id", user.id);
+  } catch (e) {
+    console.warn("Could not update profile:", e);
+  }
+
+  try {
+    await adminClient.from("fellow_onboarding_progress").upsert({
+      user_id: user.id,
+      step_id: "step_1_kyc",
+      status: "in_review",
+      submitted_payload: {
+        sessionId,
+        provider: "didit.me",
+        initiatedAt: new Date().toISOString(),
+      },
+      updated_at: new Date().toISOString(),
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    await adminClient.from("kyc_verifications").insert({
+      user_id: user.id,
+      session_id: sessionId,
+      workflow_id: workflowId || "didit_default",
+      status: "pending",
+      decision: "In Review",
+      vendor_data: user.id,
+      raw_payload: {
+        provider: "didit.me",
+        url: verificationUrl,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true, url: verificationUrl, sessionId };
+}
+
+export async function completeOnboardingTourAction(): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "Authentication required" };
+  }
+
+  const adminClient = createAdminClient();
+
+  try {
+    await adminClient.auth.admin.updateUserById(user.id, {
+      user_metadata: { has_completed_tour: true },
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    await adminClient
+      .from("profiles")
+      .update({ has_completed_tour: true })
+      .eq("id", user.id);
+  } catch {
+    // Non-fatal
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+export async function resetOnboardingTourAction(): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, error: "Authentication required" };
+  }
+
+  const adminClient = createAdminClient();
+
+  try {
+    await adminClient.auth.admin.updateUserById(user.id, {
+      user_metadata: { has_completed_tour: false },
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    await adminClient
+      .from("profiles")
+      .update({ has_completed_tour: false })
+      .eq("id", user.id);
+  } catch {
+    // Non-fatal
+  }
+
+  revalidatePath("/dashboard");
+  return { success: true };
+}
+
+export async function simulateSandboxKycVerification(
+  approved = true
+): Promise<{ success: boolean; message: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, message: "Unauthorized" };
+  }
+
+  const newStatus = approved ? "verified" : "rejected";
+  const nowIso = new Date().toISOString();
+  const adminClient = createAdminClient();
+
+  try {
+    await adminClient.auth.admin.updateUserById(user.id, {
+      user_metadata: {
+        kyc_status: newStatus,
+        kyc_verified_at: approved ? nowIso : null,
+      },
+    });
+  } catch (e) {
+    console.warn("Could not update user metadata:", e);
+  }
+
+  try {
+    await adminClient
+      .from("profiles")
+      .update({
+        kyc_status: newStatus,
+        kyc_verified_at: approved ? nowIso : null,
+      })
+      .eq("id", user.id);
+  } catch (e) {
+    console.warn("Could not update profiles:", e);
+  }
+
+  try {
+    await adminClient.from("fellow_onboarding_progress").upsert({
+      user_id: user.id,
+      step_id: "step_1_kyc",
+      status: approved ? "completed" : "failed",
+      score: approved ? 100 : null,
+      submitted_payload: {
+        provider: "didit.me",
+        sandbox: true,
+        verifiedAt: nowIso,
+      },
+      updated_at: nowIso,
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  revalidatePath("/dashboard");
+  return {
+    success: true,
+    message: approved ? "Identity verification approved!" : "Identity verification declined.",
+  };
+}

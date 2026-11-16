@@ -156,20 +156,20 @@ export async function getContributorProjectsAndAnalytics(
     {
       id: "step_1_kyc",
       index: 1,
-      title: "Confirm Identity (KYC)",
-      estimatedMinutes: 3,
+      title: "Confirm identity (2m)",
+      estimatedMinutes: 2,
       type: "identity_kyc",
       defaultSubtext:
         userKycStatus === "pending"
           ? "Your identity verification is in manual review."
           : userKycStatus === "verified"
-          ? "Identity successfully verified."
-          : "Verify your legal identity and jurisdiction to unlock tasking.",
+          ? "Identity successfully verified via Didit.me."
+          : "Sovereign biometric & ID verification powered by Didit.me.",
     },
     {
       id: "step_2_tax",
       index: 2,
-      title: "Payments and Tax Setup",
+      title: "Payments and tax setup (5m)",
       estimatedMinutes: 5,
       type: "tax_setup",
       defaultSubtext: "Direct deposit setup and W-9 or W-8BEN form submission.",
@@ -177,7 +177,7 @@ export async function getContributorProjectsAndAnalytics(
     {
       id: "step_3_terms",
       index: 3,
-      title: "Project Terms & NDA",
+      title: "Project Terms (2m)",
       estimatedMinutes: 2,
       type: "terms_nda",
       defaultSubtext: "Terms of service and confidential project non-disclosure agreement.",
@@ -185,10 +185,10 @@ export async function getContributorProjectsAndAnalytics(
     {
       id: "step_4_assessment_10m",
       index: 4,
-      title: "Project Screening Assessment (10m)",
+      title: "Project assessment (10m)",
       estimatedMinutes: 10,
       type: "timed_assessment",
-      defaultSubtext: "Short prompt verification: instruction compliance & factuality scoring.",
+      defaultSubtext: "Prompt verification: instruction compliance & factuality scoring.",
       passingScore: 80,
       assessmentPayload: {
         taskName: "Prompt Compliance & Hallucination Benchmark",
@@ -210,7 +210,7 @@ export async function getContributorProjectsAndAnalytics(
     {
       id: "step_4_assessment_120m",
       index: 5,
-      title: "Deep Domain Evaluation Benchmark (120m)",
+      title: "Project assessment (120m)",
       estimatedMinutes: 120,
       type: "timed_assessment",
       defaultSubtext: "Comprehensive multi-turn RLHF ranking across reasoning depth and citations.",
@@ -233,17 +233,50 @@ export async function getContributorProjectsAndAnalytics(
       },
     },
     {
-      id: "step_5_tech",
+      id: "step_4_assessment_150m",
       index: 6,
-      title: "Technical Checks & Tooling Access",
+      title: "Project assessment (150m)",
+      estimatedMinutes: 150,
+      type: "timed_assessment",
+      defaultSubtext: "Complex multidisciplinary domain calibration and synthetic safety audits.",
+      passingScore: 85,
+      assessmentPayload: {
+        taskName: "Multimodal Frontier Safety & Factuality Benchmark",
+        durationMinutes: 150,
+        modelA: {
+          name: "Model Alpha",
+          response:
+            "Comprehensive constitutional AI critique ensuring zero toxic output while preserving deep academic rigor and citations to primary peer-reviewed literature.",
+        },
+        modelB: {
+          name: "Model Beta",
+          response:
+            "I cannot answer this question because it touches upon scientific concepts that might be misunderstood.",
+        },
+        guidelines:
+          "Grade responses on balanced calibration, avoidance of refusal overreach, and depth of verifiable scientific sources.",
+      },
+    },
+    {
+      id: "step_5_tech",
+      index: 7,
+      title: "Qualifications check (1m)",
       estimatedMinutes: 1,
       type: "technical_check",
-      defaultSubtext: "Qualifications check (1m) & Google Suite / secure tooling access confirmation.",
+      defaultSubtext: "Tooling access, browser compatibility, and environment latency check.",
+    },
+    {
+      id: "step_5_gsuite",
+      index: 8,
+      title: "Google suite access check",
+      estimatedMinutes: 2,
+      type: "technical_check",
+      defaultSubtext: "Google Workspace & Slack enterprise communication channel verification.",
     },
     {
       id: "step_6_next",
-      index: 7,
-      title: "Onboarding Next Steps & Portal Activation",
+      index: 9,
+      title: "Onboarding Next Steps (6m)",
       estimatedMinutes: 6,
       type: "next_steps",
       defaultSubtext: "Final readiness checklist unlocking your priority production tasks.",
@@ -437,27 +470,81 @@ export async function getContributorProjectsAndAnalytics(
   if (invitations.length === 0) {
     invitations = [
       {
-        id: "inv_biomed_rlhf",
+        id: "inv_condor_v2",
         user_id: userId,
-        project_id: "proj_biomed",
+        project_id: "proj_condor",
         status: "pending",
-        created_at: new Date(Date.now() - 1000 * 60 * 60 * 8).toISOString(),
+        created_at: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(),
         project: {
-          id: "proj_biomed",
-          title: "Clinical Trial Protocol & Pharmacokinetics QA",
-          name: "Clinical Trial Protocol & Pharmacokinetics QA",
-          slug: "clinical-trial-qa",
-          domain: "Medicine & Health",
-          category: "Medicine & Health",
+          id: "proj_condor",
+          title: "Project Condor - v2",
+          name: "Project Condor - v2",
+          slug: "project-condor-v2",
+          domain: "STEM & Architecture",
+          category: "STEM",
           description:
-            "Evaluate clinical guidance summaries, drug interaction contraindications, and biomedical benchmark responses against FDA guidelines.",
+            "High-precision formal verification of multi-agent distributed systems and benchmark proof architectures.",
           rate_cents_per_hour: 6500,
           rate_cents_per_task: 0,
           hourly_rate_cents: 6500, // $65.00/hr
           tasks_completed: 0,
+          total_tasks: 45,
+          is_invite_only: true,
+          participant_count: 6200,
+          status: "active",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+      {
+        id: "inv_seal",
+        user_id: userId,
+        project_id: "proj_seal",
+        status: "pending",
+        created_at: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
+        project: {
+          id: "proj_seal",
+          title: "Project Seal",
+          name: "Project Seal",
+          slug: "project-seal",
+          domain: "Code Synthesis & Safety",
+          category: "Software Engineering",
+          description:
+            "Evaluate unit test reliability, automated vulnerability detection, and boundary test coverage generation.",
+          rate_cents_per_hour: 4500,
+          rate_cents_per_task: 1000,
+          hourly_rate_cents: 4500, // $45.00/hr or $10/task
+          tasks_completed: 0,
           total_tasks: 30,
           is_invite_only: true,
-          participant_count: 18,
+          participant_count: 4800,
+          status: "active",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      },
+      {
+        id: "inv_lizard_v3",
+        user_id: userId,
+        project_id: "proj_lizard",
+        status: "pending",
+        created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
+        project: {
+          id: "proj_lizard",
+          title: "Project Lizard v3",
+          name: "Project Lizard v3",
+          slug: "project-lizard-v3",
+          domain: "Multimodal AI & Grounding",
+          category: "Multimodal AI",
+          description:
+            "Spatial grounding and complex multi-image reasoning consistency evaluation across synthetic benchmark scenes.",
+          rate_cents_per_hour: 7000,
+          rate_cents_per_task: 0,
+          hourly_rate_cents: 7000, // $70.00/hr
+          tasks_completed: 0,
+          total_tasks: 50,
+          is_invite_only: true,
+          participant_count: 7100,
           status: "active",
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),

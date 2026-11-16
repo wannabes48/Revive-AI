@@ -217,80 +217,82 @@ export function ProjectsFeed({
       </div>
 
       {/* SECTION 2: "You're Invited to Join" Cards */}
-      {invitations.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <h3 className="font-heading text-lg font-bold text-foreground">
-              You&apos;re Invited to Join ({invitations.length})
-            </h3>
-          </div>
+      <div data-tour="project-invites" className="space-y-4">
+        {invitations.length > 0 ? (
+          <>
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <h3 className="font-heading text-lg font-bold text-foreground">
+                You&apos;re Invited to Join ({invitations.length})
+              </h3>
+            </div>
 
-          <div className="grid grid-cols-1 gap-4">
-            {invitations.map((inv) => {
-              const project = inv.project;
-              const rateCents = project?.rate_cents_per_hour || project?.hourly_rate_cents || 6500;
-              const rateFormatted = `$${(rateCents / 100).toFixed(2)}/hr`;
-              const projectTitle = project?.title || project?.name || "Specialist AI Project";
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {invitations.map((inv) => {
+                const project = inv.project;
+                const rateCents = project?.rate_cents_per_hour || project?.hourly_rate_cents || 6500;
+                const rateFormatted = `$${(rateCents / 100).toFixed(2)}/hr`;
+                const projectTitle = project?.title || project?.name || "Specialist AI Project";
 
-              return (
-                <div
-                  key={inv.id}
-                  className="bg-gradient-to-r from-card via-card to-[#F8FAF3] rounded-2xl border border-[#0F766E]/30 p-5 shadow-2xs space-y-4"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                    <div className="space-y-1.5 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-800 border border-amber-500/30">
-                          Priority Invitation
-                        </span>
-                        <span className="text-xs font-extrabold text-[#0F766E] bg-[#CCFBF1] px-2.5 py-0.5 rounded-full border border-[#0F766E]/20">
-                          {rateFormatted}
-                        </span>
-                      </div>
-                      <h4 className="font-heading text-base font-bold text-foreground">
-                        {projectTitle}
-                      </h4>
-                      <p className="text-xs text-muted-foreground max-w-xl">
-                        {project?.description}
-                      </p>
-
-                      {/* Participant Avatar Stack */}
-                      <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
-                        <div className="flex -space-x-1.5">
-                          <span className="w-5 h-5 rounded-full bg-emerald-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
-                            DK
+                return (
+                  <div
+                    key={inv.id}
+                    className="bg-gradient-to-r from-card via-card to-[#F8FAF3] rounded-2xl border border-[#0F766E]/30 p-5 shadow-2xs space-y-4"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-800 border border-amber-500/30">
+                            Priority Invitation
                           </span>
-                          <span className="w-5 h-5 rounded-full bg-cyan-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
-                            AR
-                          </span>
-                          <span className="w-5 h-5 rounded-full bg-indigo-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
-                            MT
+                          <span className="text-xs font-extrabold text-[#0F766E] bg-[#CCFBF1] px-2.5 py-0.5 rounded-full border border-[#0F766E]/20">
+                            {rateFormatted}
                           </span>
                         </div>
-                        <span className="text-[11px] font-medium text-foreground">
-                          +18 domain contributors active now
-                        </span>
+                        <h4 className="font-heading text-base font-bold text-foreground">
+                          {projectTitle}
+                        </h4>
+                        <p className="text-xs text-muted-foreground max-w-xl">
+                          {project?.description}
+                        </p>
+
+                        {/* Participant Avatar Stack */}
+                        <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                          <div className="flex -space-x-1.5">
+                            <span className="w-5 h-5 rounded-full bg-emerald-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
+                              DK
+                            </span>
+                            <span className="w-5 h-5 rounded-full bg-cyan-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
+                              AR
+                            </span>
+                            <span className="w-5 h-5 rounded-full bg-indigo-600 border border-white text-white flex items-center justify-center text-[9px] font-bold">
+                              MT
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-medium text-foreground">
+                            +18 domain contributors active now
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 sm:self-center">
+                        <Button
+                          size="sm"
+                          onClick={() => setSelectedInvite(inv)}
+                          className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          <span>View Invite</span>
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     </div>
-
-                    <div className="shrink-0 sm:self-center">
-                      <Button
-                        size="sm"
-                        onClick={() => setSelectedInvite(inv)}
-                        className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
-                      >
-                        <span>View Invite</span>
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+      </div>
 
       {/* SECTION 3: "Open Opportunities" List */}
       <div className="space-y-4">

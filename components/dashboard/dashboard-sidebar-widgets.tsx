@@ -15,6 +15,7 @@ import {
   ArrowRight,
   TrendingUp,
   AlertTriangle,
+  ChevronRight,
 } from "lucide-react";
 
 interface DashboardSidebarWidgetsProps {
@@ -62,7 +63,10 @@ export function DashboardSidebarWidgets({
   return (
     <div className="space-y-6">
       {/* 1. Earnings Quick Glance Widget */}
-      <div className="bg-card rounded-2xl border border-border p-5 shadow-2xs space-y-4">
+      <div
+        data-tour="earnings-sidebar"
+        className="bg-card rounded-2xl border border-border p-5 shadow-2xs space-y-4"
+      >
         <div className="flex items-center justify-between border-b border-border/60 pb-3">
           <div className="flex items-center gap-2">
             <DollarSign className="h-4 w-4 text-[#0F766E]" />
@@ -120,6 +124,33 @@ export function DashboardSidebarWidgets({
             <span className="font-bold text-foreground">{analytics.hoursThisWeek}h</span>
           </div>
         </div>
+      </div>
+
+      {/* Quick Action Links */}
+      <div
+        data-tour="payout-setup"
+        className="bg-card rounded-2xl border border-border p-4 shadow-2xs divide-y divide-border/60"
+      >
+        <Link
+          href="/earnings?tab=methods"
+          className="flex items-center justify-between py-2 text-xs font-semibold text-foreground hover:text-[#0F766E] transition-colors group"
+        >
+          <div className="flex items-center gap-2">
+            <DollarSign className="h-4 w-4 text-[#0F766E]" />
+            <span>Setup payout method</span>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+        </Link>
+        <Link
+          href="/profile"
+          className="flex items-center justify-between py-2 text-xs font-semibold text-foreground hover:text-[#0F766E] transition-colors group"
+        >
+          <div className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-primary" />
+            <span>Update your profile</span>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+        </Link>
       </div>
 
       {/* 2. Fraud & Compliance Security Notice */}

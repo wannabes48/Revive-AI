@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { OnboardingStepState } from "@/lib/projects-data";
 import {
   submitKycVerification,
@@ -9,6 +9,7 @@ import {
   submitProjectTerms,
   submitAssessmentTask,
   submitTechnicalCheck,
+  simulateSandboxKycVerification,
 } from "@/actions/onboarding";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,9 @@ import {
   Award,
   Zap,
   Loader2,
+  ExternalLink,
+  Shield,
+  Fingerprint,
 } from "lucide-react";
 
 interface OnboardingChecklistCardProps {
@@ -46,6 +50,7 @@ interface OnboardingChecklistCardProps {
 
 export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { bannerHeadline, steps, completedCount, isFullyUnlocked } = onboarding;
 
   // Active modal step
@@ -53,6 +58,15 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
 
   // Form states
   const [loading, setLoading] = React.useState(false);
+  const [diditLoading, setDiditLoading] = React.useState(false);
+
+  // Handle callback when returning from Didit.me
+  React.useEffect(() => {
+    if (searchParams.get("kyc_return") === "true") {
+      toast.info("Returned from Didit verification. Updating your onboarding status...");
+      router.refresh();
+    }
+  }, [searchParams, router]);
 
   // KYC Form state
   const [kycDocType, setKycDocType] = React.useState("passport");
@@ -110,6 +124,38 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  };
+
+  // Launch Didit.me Verification
+  const handleLaunchDidit = async () => {
+    setDiditLoading(true);
+    try {
+      const res = await fetch("/api/kyc/create-session", { method: "POST" });
+      const data = await res.json();
+      if (data.url) {
+        toast.success("Connecting to Didit.me sovereign verification portal...");
+        window.location.href = data.url;
+      } else {
+        toast.error(data.error || "Unable to start Didit verification session.");
+      }
+    } catch {
+      toast.error("Failed to connect to Didit.me verification API.");
+    } finally {
+      setDiditLoading(false);
+    }
+  };
+
+  const handleSimulateSandboxApproval = async (approved: boolean) => {
+    setLoading(true);
+    const res = await simulateSandboxKycVerification(approved);
+    setLoading(false);
+    if (res.success) {
+      toast.success(res.message);
+      setActiveModalStep(null);
+      router.refresh();
+    } else {
+      toast.error("Simulation failed");
+    }
   };
 
   // Submissions
@@ -204,7 +250,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-tour="onboarding-gate">
       {/* 1. Header Banner */}
       <div className="bg-[#F8FAF3] border border-[#E2EAD9] rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -359,7 +405,9 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5 max-w-xl">
-                    {step.subtext}
+                    {step.type === "identity_kyc" && isInReview
+                      ? "Your identity verification is in manual review."
+                      : step.subtext}
                   </p>
                 </div>
               </div>
@@ -390,7 +438,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                     onClick={() => setActiveModalStep(step)}
                     className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
                   >
-                    <span>{step.badgeText || "Start"}</span>
+                    <span>{step.type === "identity_kyc" ? "Start verification" : (step.badgeText || "Start")}</span>
                     <ChevronRight className="h-3.5 w-3.5" />
                   </Button>
                 )}
@@ -406,80 +454,153 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
         open={Boolean(activeModalStep?.type === "identity_kyc")}
         onOpenChange={(open) => !open && setActiveModalStep(null)}
         title="Confirm Legal Identity (KYC)"
-        description="Verify your sovereign identity and jurisdiction to comply with global contractor standards."
+        description="Verify your sovereign identity and jurisdiction using Didit.me's secure verification engine."
       >
-        <form onSubmit={handleKycSubmit} className="space-y-4 pt-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="docType" className="text-xs font-semibold">
-              Government Document Type
-            </Label>
-            <select
-              id="docType"
-              value={kycDocType}
-              onChange={(e) => setKycDocType(e.target.value)}
-              className="w-full h-10 px-3 text-xs rounded-xl border border-border bg-background text-foreground"
-            >
-              <option value="passport">Passport</option>
-              <option value="national_id">National ID Card</option>
-              <option value="driver_license">Driver&apos;s License</option>
-            </select>
-          </div>
+        <div className="space-y-5 pt-2">
+          {/* Didit.me Primary Integration Banner */}
+          <div className="p-4 rounded-xl border border-[#0F766E]/30 bg-[#F0FDF4]/50 dark:bg-[#0F766E]/10 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg bg-[#0F766E] text-white flex items-center justify-center shrink-0 shadow-xs">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-heading font-bold text-sm text-foreground">
+                    Automated Verification via Didit.me
+                  </h4>
+                  <span className="text-[10px] font-semibold text-[#0F766E] bg-[#CCFBF1] px-2 py-0.5 rounded-full">
+                    Recommended
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Instant biometric & ID document verification. Takes under 2 minutes.
+                </p>
+              </div>
+            </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="issuingCountry" className="text-xs font-semibold">
-              Issuing Country
-            </Label>
-            <Input
-              id="issuingCountry"
-              value={kycCountry}
-              onChange={(e) => setKycCountry(e.target.value)}
-              placeholder="e.g. United States, Kenya, Canada"
-              required
-              className="h-10 text-xs rounded-xl"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="docNumber" className="text-xs font-semibold">
-              Document Number
-            </Label>
-            <Input
-              id="docNumber"
-              value={kycDocNumber}
-              onChange={(e) => setKycDocNumber(e.target.value)}
-              placeholder="e.g. A92831048"
-              required
-              className="h-10 text-xs rounded-xl"
-            />
-          </div>
-
-          <div className="p-3 rounded-xl bg-muted/40 border border-border/60 text-[11px] text-muted-foreground space-y-1">
-            <p className="font-semibold text-foreground">Encrypted Data Guarantee</p>
-            <p>
-              Your identification credentials are cryptographically tokenized and reviewed solely for contributor compliance.
+            <p className="text-xs text-muted-foreground">
+              You will be redirected to Didit&apos;s hosted sovereign verification portal to scan your government-issued ID (Passport, National ID, or Driver&apos;s License) and complete a quick liveness check.
             </p>
-          </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2">
             <Button
               type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setActiveModalStep(null)}
-              className="rounded-full text-xs"
+              onClick={handleLaunchDidit}
+              disabled={diditLoading}
+              className="w-full h-11 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white rounded-xl font-bold text-xs sm:text-sm shadow-sm gap-2 cursor-pointer"
             >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={loading || !kycDocNumber.trim()}
-              className="rounded-full text-xs font-bold px-5 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
-            >
-              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              Submit for Verification
+              {diditLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Connecting to Didit.me Session...</span>
+                </>
+              ) : (
+                <>
+                  <ExternalLink className="h-4 w-4" />
+                  <span>Start Verification via Didit.me</span>
+                </>
+              )}
             </Button>
           </div>
-        </form>
+
+          {/* Dev / Sandbox Simulator (Allows rapid testing without external network or API keys) */}
+          <div className="p-3.5 rounded-xl border border-dashed border-border bg-muted/30 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                Developer Sandbox Simulation
+              </span>
+              <span className="text-[10px] text-muted-foreground">Dev / Test fallback</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Test onboarding gates without external Didit credentials:
+            </p>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loading}
+                onClick={() => handleSimulateSandboxApproval(true)}
+                className="h-8 text-xs font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
+              >
+                {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
+                Simulate Approval
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={loading}
+                onClick={() => handleSimulateSandboxApproval(false)}
+                className="h-8 text-xs font-semibold text-rose-700 border-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+              >
+                {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <AlertCircle className="h-3.5 w-3.5 mr-1" />}
+                Simulate Rejection
+              </Button>
+            </div>
+          </div>
+
+          {/* Alternative Manual Submission Accordion / Fallback */}
+          <details className="group border border-border/70 rounded-xl overflow-hidden bg-card text-xs">
+            <summary className="p-3 font-semibold text-muted-foreground cursor-pointer hover:bg-muted/30 flex items-center justify-between">
+              <span>Manual Document Submission (Alternative)</span>
+              <ChevronRight className="h-4 w-4 group-open:rotate-90 transition-transform" />
+            </summary>
+            <form onSubmit={handleKycSubmit} className="p-4 pt-1 space-y-3 border-t border-border/50">
+              <div className="space-y-1">
+                <Label htmlFor="docType" className="text-xs font-semibold">
+                  Government Document Type
+                </Label>
+                <select
+                  id="docType"
+                  value={kycDocType}
+                  onChange={(e) => setKycDocType(e.target.value)}
+                  className="w-full h-9 px-3 text-xs rounded-lg border border-border bg-background text-foreground"
+                >
+                  <option value="passport">Passport</option>
+                  <option value="national_id">National ID Card</option>
+                  <option value="driver_license">Driver&apos;s License</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="issuingCountry" className="text-xs font-semibold">
+                  Issuing Country
+                </Label>
+                <Input
+                  id="issuingCountry"
+                  value={kycCountry}
+                  onChange={(e) => setKycCountry(e.target.value)}
+                  placeholder="e.g. United States, Kenya, Canada"
+                  required
+                  className="h-9 text-xs rounded-lg"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="docNumber" className="text-xs font-semibold">
+                  Document Number
+                </Label>
+                <Input
+                  id="docNumber"
+                  value={kycDocNumber}
+                  onChange={(e) => setKycDocNumber(e.target.value)}
+                  placeholder="e.g. A92831048"
+                  required
+                  className="h-9 text-xs rounded-lg"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                disabled={loading || !kycDocNumber.trim()}
+                className="w-full h-9 rounded-lg text-xs font-bold bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
+              >
+                {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                Submit for Manual Review
+              </Button>
+            </form>
+          </details>
+        </div>
       </ResponsiveDialog>
 
       {/* MODAL 2: Payments and Tax Setup */}

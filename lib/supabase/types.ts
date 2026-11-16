@@ -38,6 +38,9 @@ export interface Profile {
   role: UserRole;
   approval_status?: "waitlisted" | "approved" | "rejected";
   kyc_status?: "unverified" | "pending" | "verified" | "rejected";
+  didit_session_id?: string | null;
+  has_completed_tour?: boolean;
+  kyc_verified_at?: string | null;
   country_code?: string | null;
   payout_method_configured?: boolean;
   referral_code?: string;
@@ -313,6 +316,26 @@ export interface OpenOpportunity {
   is_active: boolean;
   created_at: string;
   user_interest_status?: "submitted" | "under_review" | "accepted" | null;
+}
+
+export interface KycVerification {
+  id: string;
+  user_id: string;
+  session_id: string;
+  workflow_id?: string | null;
+  status: "pending" | "verified" | "in_review" | "rejected" | "expired";
+  decision?: "Approved" | "Declined" | "In Review" | "Expired" | string | null;
+  document_type?: string | null;
+  country_code?: string | null;
+  vendor_data?: string | null;
+  verified_at?: string | null;
+  decline_reasons?: string[] | null;
+  admin_notes?: string | null;
+  reviewed_by?: string | null;
+  raw_payload?: any;
+  created_at: string;
+  updated_at: string;
+  profile?: Profile;
 }
 
 export type Database = SupabaseDatabase;

@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { ContributorDashboardData } from "@/lib/projects-data";
 import { DashboardSubnav, DashboardTab } from "@/components/dashboard/dashboard-subnav";
 import { OnboardingChecklistCard } from "@/components/dashboard/onboarding-checklist-card";
+import { OnboardingTour } from "@/components/onboarding/onboarding-tour";
 import { ProjectsFeed } from "@/components/dashboard/projects-feed";
 import { DashboardSidebarWidgets } from "@/components/dashboard/dashboard-sidebar-widgets";
 import { PaymentsAnalyticsView } from "@/components/dashboard/payments-analytics-view";
@@ -85,6 +86,9 @@ export function DashboardViewController({
 
   return (
     <div className="space-y-8 pb-12">
+      {/* Interactive Spotlight Tour for New Fellows */}
+      <OnboardingTour hasCompletedTour={Boolean(profile?.has_completed_tour)} />
+
       {/* 1. Greeting Header */}
       <DashboardHeader fullName={profile?.full_name} email={user.email} />
 

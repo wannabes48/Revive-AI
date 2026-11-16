@@ -68,7 +68,11 @@ export function DashboardSubnav({
     <>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/70 pb-3">
         {/* Navigation Tabs */}
-        <nav className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1 min-w-0" aria-label="Dashboard views">
+        <nav
+          data-tour="nav-tabs"
+          className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1 min-w-0"
+          aria-label="Dashboard views"
+        >
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -140,10 +144,39 @@ export function DashboardSubnav({
       <ResponsiveDialog
         open={supportOpen}
         onOpenChange={setSupportOpen}
-        title="Contributor Priority Support"
+        title="Contributor Priority Support & Help"
         description="Have a question about task guidelines, evaluation rubrics, or payout timelines? Our specialist team is here to assist."
       >
-        <form onSubmit={handleSendSupport} className="space-y-4 pt-2">
+        <div className="space-y-4 pt-2">
+          {/* Quick Product Tour Button */}
+          <div className="p-3.5 rounded-xl border border-[#0F766E]/20 bg-[#CCFBF1]/20 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-[#0F766E] text-white flex items-center justify-center shrink-0">
+                <Sparkles className="h-4 w-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-foreground">Interactive Workspace Tour</h4>
+                <p className="text-[11px] text-muted-foreground">
+                  Re-visit key spotlight steps for projects, assessments, and payouts.
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                setSupportOpen(false);
+                setTimeout(() => {
+                  window.dispatchEvent(new CustomEvent("start-onboarding-tour"));
+                }, 300);
+              }}
+              className="rounded-full text-xs font-bold h-8 px-3.5 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white shrink-0 cursor-pointer"
+            >
+              Start Tour
+            </Button>
+          </div>
+
+          <form onSubmit={handleSendSupport} className="space-y-4 pt-1">
           <div className="space-y-1.5">
             <Label htmlFor="supportSubject" className="text-xs font-semibold">
               Issue Category
@@ -199,6 +232,7 @@ export function DashboardSubnav({
             </Button>
           </div>
         </form>
+        </div>
       </ResponsiveDialog>
     </>
   );
