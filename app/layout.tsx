@@ -17,6 +17,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'https://joinreviveai.com'),
+  
   title: "Revive AI — Expert Tasking Platform",
   description:
     "An expert tasking platform where domain specialists contribute to AI evaluations, tasking, and fine-tuning pipelines.",

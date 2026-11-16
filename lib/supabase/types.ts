@@ -322,20 +322,56 @@ export interface KycVerification {
   id: string;
   user_id: string;
   session_id: string;
+  event_id?: string | null;
+  webhook_type?: string | null;
   workflow_id?: string | null;
-  status: "pending" | "verified" | "in_review" | "rejected" | "expired";
-  decision?: "Approved" | "Declined" | "In Review" | "Expired" | string | null;
+  status:
+    | "pending"
+    | "verified"
+    | "in_review"
+    | "in_progress"
+    | "rejected"
+    | "expired"
+    | "abandoned"
+    | "resubmitted"
+    | string;
+  decision?:
+    | "Approved"
+    | "Declined"
+    | "In Review"
+    | "In Progress"
+    | "Not Started"
+    | "Abandoned"
+    | "Expired"
+    | "KYC Expired"
+    | "Resubmitted"
+    | string
+    | null;
   document_type?: string | null;
   country_code?: string | null;
   vendor_data?: string | null;
   verified_at?: string | null;
   decline_reasons?: string[] | null;
+  warnings?: any;
+  ip_risk_score?: number | null;
+  liveness_passed?: boolean | null;
+  aml_passed?: boolean | null;
   admin_notes?: string | null;
   reviewed_by?: string | null;
   raw_payload?: any;
   created_at: string;
   updated_at: string;
   profile?: Profile;
+}
+
+export interface DiditWebhookEvent {
+  event_id: string;
+  session_id: string | null;
+  webhook_type: string;
+  status: string | null;
+  vendor_data: string | null;
+  processed_at: string;
+  raw_payload?: any;
 }
 
 export type Database = SupabaseDatabase;
