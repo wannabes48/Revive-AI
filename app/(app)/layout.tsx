@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { Sidebar } from "@/components/app/sidebar";
-import { Topbar } from "@/components/app/topbar";
+
 import { BottomNav } from "@/components/app/bottom-nav";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +48,6 @@ export default async function AppLayout({
     <div className="min-h-screen bg-background">
       <Sidebar role={profile?.role} profile={profile} />
       <div className="md:pl-60 min-w-0">
-        <Topbar profile={profile} unread={unread ?? 0} />
         <main className="mx-auto max-w-5xl px-3 sm:px-6 py-4 sm:py-6 bottom-bar-padding md:pb-10 min-w-0">
           {children}
         </main>

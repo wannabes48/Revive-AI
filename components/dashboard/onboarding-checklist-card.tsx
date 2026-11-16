@@ -134,12 +134,16 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
       const data = await res.json();
       if (data.url) {
         toast.success("Connecting to Didit.me sovereign verification portal...");
-        window.location.href = data.url;
+        window.location.assign(data.url);
       } else {
         toast.error(data.error || "Unable to start Didit verification session.");
+        const kycStep = steps.find((s) => s.type === "identity_kyc");
+        if (kycStep) setActiveModalStep(kycStep);
       }
     } catch {
       toast.error("Failed to connect to Didit.me verification API.");
+      const kycStep = steps.find((s) => s.type === "identity_kyc");
+      if (kycStep) setActiveModalStep(kycStep);
     } finally {
       setDiditLoading(false);
     }
@@ -433,14 +437,42 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                     <span>Locked</span>
                   </span>
                 ) : (
-                  <Button
-                    size="sm"
-                    onClick={() => setActiveModalStep(step)}
-                    className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
-                  >
-                    <span>{step.type === "identity_kyc" ? "Start verification" : (step.badgeText || "Start")}</span>
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {step.type === "identity_kyc" && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveModalStep(step)}
+                        title="Alternative verification options / manual submission"
+                        className="text-[11px] font-medium text-muted-foreground hover:text-foreground underline underline-offset-2 px-1 cursor-pointer"
+                      >
+                        Options
+                      </button>
+                    )}
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        if (step.type === "identity_kyc") {
+                          handleLaunchDidit();
+                        } else {
+                          setActiveModalStep(step);
+                        }
+                      }}
+                      disabled={step.type === "identity_kyc" && diditLoading}
+                      className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      {step.type === "identity_kyc" && diditLoading ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          <span>Connecting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>{step.type === "identity_kyc" ? "Start verification" : (step.badgeText || "Start")}</span>
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>

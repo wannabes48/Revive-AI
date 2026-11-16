@@ -82,8 +82,6 @@ export function Topbar({ profile, unread }: TopbarProps) {
 
       {/* Right Controls: Notifications Bell & Avatar Menu */}
       <div className="flex items-center gap-2 sm:gap-3">
-        {/* Notification Bell */}
-        <NotificationBell unreadCount={unread} />
 
         {/* Avatar Menu */}
         <div className="relative" ref={menuRef}>

@@ -402,8 +402,7 @@ export async function initiateDiditKyc(
     return { success: false, error: "Authentication required" };
   }
 
-  const clientId = process.env.DIDIT_CLIENT_ID;
-  const clientSecret = process.env.DIDIT_CLIENT_SECRET;
+  const apiKey = process.env.DIDIT_API_KEY || process.env.DIDIT_CLIENT_SECRET;
   const workflowId = process.env.DIDIT_WORKFLOW_ID;
 
   const appUrl =
@@ -414,48 +413,39 @@ export async function initiateDiditKyc(
   let sessionId: string | null = null;
   let verificationUrl: string | null = null;
 
-  if (clientId && clientSecret && workflowId && clientId !== "placeholder_client_id") {
+  if (apiKey && workflowId && apiKey !== "placeholder_client_secret") {
     try {
-      const tokenRes = await fetch("https://apx.didit.me/auth/v2/token/", {
+      const callbackUrl = `${appUrl}${redirectPath}?tab=ai-work&kyc_return=true`;
+      const sessionRes = await fetch("https://verification.didit.me/v3/session/", {
         method: "POST",
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
         },
-        body: new URLSearchParams({ grant_type: "client_credentials" }),
+        body: JSON.stringify({
+          vendor_data: user.id,
+          callback: callbackUrl,
+          workflow_id: workflowId,
+        }),
       });
 
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        const callbackUrl = `${appUrl}${redirectPath}?kyc_return=true`;
-        const sessionRes = await fetch("https://verification.didit.me/v2/session/", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${tokenData.access_token}`,
-          },
-          body: JSON.stringify({
-            vendor_data: user.id,
-            callback: callbackUrl,
-            workflow_id: workflowId,
-          }),
-        });
-
-        if (sessionRes.ok) {
-          const sessionData = await sessionRes.json();
-          sessionId = sessionData.session_id || sessionData.id;
-          verificationUrl = sessionData.url;
-        }
+      if (sessionRes.ok) {
+        const sessionData = await sessionRes.json();
+        sessionId = sessionData.session_id || sessionData.id;
+        verificationUrl = sessionData.url;
+      } else {
+        const errText = await sessionRes.text();
+        console.error("Didit V3 session creation error:", sessionRes.status, errText);
       }
     } catch (e: any) {
       console.warn("Didit API live call warning:", e.message);
     }
   }
 
-  // Fallback sandbox session
+  // Fallback sandbox session if no keys configured
   if (!sessionId || !verificationUrl) {
     sessionId = `didit_sandbox_${user.id.slice(0, 8)}_${Date.now()}`;
-    verificationUrl = `${appUrl}${redirectPath}?kyc_return=true&didit_session=${sessionId}&sandbox=true`;
+    verificationUrl = `${appUrl}${redirectPath}?tab=ai-work&kyc_return=true&didit_session=${sessionId}&sandbox=true`;
   }
 
   const adminClient = createAdminClient();

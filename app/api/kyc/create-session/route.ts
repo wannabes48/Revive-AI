@@ -13,80 +13,115 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "localhost:3000";
-    const protocol = req.headers.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
+    const host =
+      req.headers.get("x-forwarded-host") || req.headers.get("host") || "localhost:3000";
+    const protocol =
+      req.headers.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
     const appUrl =
       process.env.NEXT_PUBLIC_APP_URL ||
       process.env.NEXT_PUBLIC_SITE_URL ||
       `${protocol}://${host}`;
 
+    const apiKey =
+      process.env.DIDIT_API_KEY ||
+      process.env.DIDIT_CLIENT_SECRET;
     const clientId = process.env.DIDIT_CLIENT_ID;
-    const clientSecret = process.env.DIDIT_CLIENT_SECRET;
     const workflowId = process.env.DIDIT_WORKFLOW_ID;
 
     let sessionId: string | null = null;
     let verificationUrl: string | null = null;
 
-    // 1. If Didit.me credentials are configured, create real verification session
-    if (clientId && clientSecret && workflowId && clientId !== "placeholder_client_id") {
+    const callbackUrl = `${appUrl}/dashboard?tab=ai-work&kyc_return=true`;
+
+    // 1. Primary: Didit.me V3 Session Creation using Secret/API Key (x-api-key)
+    if (apiKey && workflowId && apiKey !== "placeholder_client_secret") {
       try {
-        // Step A: Request Didit API token
+        const v3Response = await fetch("https://verification.didit.me/v3/session/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            workflow_id: workflowId,
+            vendor_data: user.id,
+            callback: callbackUrl,
+          }),
+        });
+
+        if (v3Response.ok) {
+          const v3Data = await v3Response.json();
+          sessionId = v3Data.session_id || v3Data.id;
+          verificationUrl = v3Data.url;
+        } else {
+          const errText = await v3Response.text();
+          console.error("Didit V3 session creation error:", v3Response.status, errText);
+        }
+      } catch (err: any) {
+        console.error("Didit V3 API fetch exception:", err.message);
+      }
+    }
+
+    // 2. Fallback: If V3 failed or OAuth Client Credentials are configured
+    if (!verificationUrl && clientId && apiKey && workflowId && clientId !== "placeholder_client_id") {
+      try {
         const tokenResponse = await fetch("https://apx.didit.me/auth/v2/token/", {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
-            Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+            Authorization: `Basic ${Buffer.from(`${clientId}:${apiKey}`).toString("base64")}`,
           },
           body: new URLSearchParams({
             grant_type: "client_credentials",
           }),
         });
 
-        if (!tokenResponse.ok) {
-          const errText = await tokenResponse.text();
-          console.error("Didit token request failed:", tokenResponse.status, errText);
-          throw new Error(`Didit token error: ${tokenResponse.status}`);
+        if (tokenResponse.ok) {
+          const tokenData = await tokenResponse.json();
+          const accessToken = tokenData.access_token;
+
+          const v2Response = await fetch("https://verification.didit.me/v2/session/", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              vendor_data: user.id,
+              callback: callbackUrl,
+              workflow_id: workflowId,
+            }),
+          });
+
+          if (v2Response.ok) {
+            const v2Data = await v2Response.json();
+            sessionId = v2Data.session_id || v2Data.id;
+            verificationUrl = v2Data.url;
+          }
         }
-
-        const tokenData = await tokenResponse.json();
-        const accessToken = tokenData.access_token;
-
-        // Step B: Create Verification Session with Didit
-        const callbackUrl = `${appUrl}/dashboard?kyc_return=true`;
-        const sessionResponse = await fetch("https://verification.didit.me/v2/session/", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            vendor_data: user.id,
-            callback: callbackUrl,
-            workflow_id: workflowId,
-          }),
-        });
-
-        if (!sessionResponse.ok) {
-          const sessionErr = await sessionResponse.text();
-          console.error("Didit session creation failed:", sessionResponse.status, sessionErr);
-          throw new Error(`Didit session error: ${sessionResponse.status}`);
-        }
-
-        const sessionData = await sessionResponse.json();
-        sessionId = sessionData.session_id || sessionData.id;
-        verificationUrl = sessionData.url;
-      } catch (err: any) {
-        console.warn("Didit live API error, falling back to sandbox session:", err.message);
+      } catch (oauthErr: any) {
+        console.warn("Didit OAuth fallback failed:", oauthErr.message);
       }
     }
 
-    // 2. Sandbox/Dev Fallback if Didit keys are not set or in local testing
+    // 3. If Still Not Created, Check If Environment Variables Are Missing
     if (!sessionId || !verificationUrl) {
+      if (!apiKey || !workflowId) {
+        return NextResponse.json(
+          {
+            error:
+              "Didit credentials missing. Please set DIDIT_CLIENT_SECRET (or DIDIT_API_KEY) and DIDIT_WORKFLOW_ID in .env.local",
+          },
+          { status: 500 }
+        );
+      }
+
+      // Local sandbox fallback for testing without active network
       sessionId = `didit_sandbox_${user.id.slice(0, 8)}_${Date.now()}`;
-      verificationUrl = `${appUrl}/dashboard?kyc_return=true&didit_session=${sessionId}&sandbox=true`;
+      verificationUrl = `${appUrl}/dashboard?tab=ai-work&kyc_return=true&didit_session=${sessionId}&sandbox=true`;
     }
 
-    // 3. Update Supabase User & Profile
+    // 4. Update Supabase User Metadata & Profile
     const adminClient = createAdminClient();
 
     try {
@@ -112,7 +147,7 @@ export async function POST(req: NextRequest) {
       console.warn("Could not update profile kyc_status:", e);
     }
 
-    // 4. Update fellow onboarding checklist progress
+    // 5. Update fellow onboarding checklist progress
     try {
       await adminClient.from("fellow_onboarding_progress").upsert({
         user_id: user.id,
@@ -126,26 +161,47 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       });
     } catch {
-      // Non-fatal if table not yet migrated
+      // Non-fatal
     }
 
-    // 5. Store record in kyc_verifications table
+    // 6. Record session in kyc_verifications table for Admin Console
     try {
-      await adminClient.from("kyc_verifications").insert({
-        user_id: user.id,
-        session_id: sessionId,
-        workflow_id: workflowId || "didit_default",
-        status: "pending",
-        decision: "In Review",
-        vendor_data: user.id,
-        raw_payload: {
-          provider: "didit.me",
-          url: verificationUrl,
-          createdAt: new Date().toISOString(),
+      await adminClient.from("kyc_verifications").upsert(
+        {
+          user_id: user.id,
+          session_id: sessionId,
+          workflow_id: workflowId || "didit_default",
+          status: "pending",
+          decision: "In Progress",
+          vendor_data: user.id,
+          raw_payload: {
+            provider: "didit.me",
+            url: verificationUrl,
+            createdAt: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
         },
-      });
+        { onConflict: "session_id" }
+      );
     } catch {
-      // Non-fatal
+      // Fallback insert
+      try {
+        await adminClient.from("kyc_verifications").insert({
+          user_id: user.id,
+          session_id: sessionId,
+          workflow_id: workflowId || "didit_default",
+          status: "pending",
+          decision: "In Progress",
+          vendor_data: user.id,
+          raw_payload: {
+            provider: "didit.me",
+            url: verificationUrl,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      } catch {
+        // Table not ready
+      }
     }
 
     return NextResponse.json({
@@ -154,7 +210,7 @@ export async function POST(req: NextRequest) {
       status: "pending",
     });
   } catch (error: any) {
-    console.error("KYC create-session route error:", error);
+    console.error("KYC create-session route critical error:", error);
     return NextResponse.json(
       { error: error?.message || "Internal server error" },
       { status: 500 }
