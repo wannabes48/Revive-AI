@@ -60,8 +60,12 @@ const BLOCKED_AFRICAN_COUNTRIES = new Set([
 ]);
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
   // 1. Allow webhooks (e.g., Didit.me) to bypass geoblocking so server callbacks never fail
-  if (request.nextUrl.pathname.startsWith("/api/webhooks")) {
+  if (
+    pathname.startsWith("/api/webhooks") ||
+    pathname === "/region-restricted"
+  ) {
     return NextResponse.next();
   }
 
@@ -72,13 +76,9 @@ export async function middleware(request: NextRequest) {
     (request as NextRequest & { geo?: { country?: string } }).geo?.country;
 
   if (country && BLOCKED_AFRICAN_COUNTRIES.has(country.toUpperCase())) {
-    return new NextResponse(
-      "Access Denied: This service is currently unavailable in your region.",
-      {
-        status: 403,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
+    const url = request.nextUrl.clone();
+    url.pathname = "/region-restricted";
+    return NextResponse.rewrite(url, { status: 403 });
   }
 
   // 3. Proceed with Supabase Auth session refresh
