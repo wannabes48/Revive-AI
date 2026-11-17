@@ -149,18 +149,6 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
     }
   };
 
-  const handleSimulateSandboxApproval = async (approved: boolean) => {
-    setLoading(true);
-    const res = await simulateSandboxKycVerification(approved);
-    setLoading(false);
-    if (res.success) {
-      toast.success(res.message);
-      setActiveModalStep(null);
-      router.refresh();
-    } else {
-      toast.error("Simulation failed");
-    }
-  };
 
   // Submissions
   const handleKycSubmit = async (e: React.FormEvent) => {
@@ -181,6 +169,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
       router.refresh();
     }
   };
+  
 
   const handleTaxSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -532,43 +521,6 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                 </>
               )}
             </Button>
-          </div>
-
-          {/* Dev / Sandbox Simulator (Allows rapid testing without external network or API keys) */}
-          <div className="p-3.5 rounded-xl border border-dashed border-border bg-muted/30 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                Developer Sandbox Simulation
-              </span>
-              <span className="text-[10px] text-muted-foreground">Dev / Test fallback</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Test onboarding gates without external Didit credentials:
-            </p>
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={loading}
-                onClick={() => handleSimulateSandboxApproval(true)}
-                className="h-8 text-xs font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
-              >
-                {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <CheckCircle2 className="h-3.5 w-3.5 mr-1" />}
-                Simulate Approval
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={loading}
-                onClick={() => handleSimulateSandboxApproval(false)}
-                className="h-8 text-xs font-semibold text-rose-700 border-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/30"
-              >
-                {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <AlertCircle className="h-3.5 w-3.5 mr-1" />}
-                Simulate Rejection
-              </Button>
-            </div>
           </div>
 
           {/* Alternative Manual Submission Accordion / Fallback */}

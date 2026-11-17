@@ -2,12 +2,27 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
+import { notifyOnboardingProgress } from "@/lib/emails/automation";
+import { z } from "zod";
+
+const manualKycSchema = z.object({
+  documentType: z.enum(["passport", "national_id", "driver_license"]),
+  issuingCountry: z.string().min(2, "Issuing country is required").max(100),
+  documentNumber: z.string().min(4, "Valid document number is required").max(50),
+});
+
+function maskDocumentNumber(docNum: string): string {
+  const cleaned = docNum.trim();
+  if (cleaned.length <= 4) return "****";
+  return `${"*".repeat(cleaned.length - 4)}${cleaned.slice(-4)}`;
+}
 
 export type OnboardingActionResult = {
   success?: boolean;
   error?: string;
   message?: string;
   score?: number;
+  verificationId?: string;
 };
 
 export async function submitKycVerification(
@@ -19,62 +34,128 @@ export async function submitKycVerification(
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return { error: "Authentication required." };
+    return { error: "You must be logged in to submit verification." };
   }
 
-  const documentType = formData.get("documentType") as string;
-  const issuingCountry = formData.get("issuingCountry") as string;
-  const documentNumber = formData.get("documentNumber") as string;
+  const parsed = manualKycSchema.safeParse({
+    documentType: formData.get("documentType"),
+    issuingCountry: formData.get("issuingCountry"),
+    documentNumber: formData.get("documentNumber"),
+  });
 
-  if (!documentType || !issuingCountry || !documentNumber?.trim()) {
-    return { error: "Please complete all required identity document fields." };
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message || "Invalid submission fields." };
   }
 
+  const { documentType, issuingCountry, documentNumber } = parsed.data;
+  const maskedNumber = maskDocumentNumber(documentNumber);
+  const adminClient = createAdminClient();
+
+  // Prevent duplicate pending manual reviews
+  const { data: existingPending } = await adminClient
+    .from("kyc_verifications")
+    .select("id")
+    .eq("user_id", user.id)
+    .in("status", ["pending", "in_review"])
+    .maybeSingle();
+
+  if (existingPending) {
+    return { error: "You already have a verification currently under review." };
+  }
+
+  // Fetch user's profile name to populate extracted_full_name for admin comparison
+  const { data: profile } = await adminClient
+    .from("profiles")
+    .select("full_name")
+    .eq("id", user.id)
+    .single();
+
+  const manualSessionId = `manual_${crypto.randomUUID()}`;
+  const nowIso = new Date().toISOString();
+
+  // 1. Insert into kyc_verifications (triggers audit log into didit_webhook_events)
+  const { data: verification, error: insertError } = await adminClient
+    .from("kyc_verifications")
+    .insert({
+      user_id: user.id,
+      provider: "manual",
+      session_id: manualSessionId,
+      event_id: manualSessionId,
+      webhook_type: "manual.submission",
+      workflow_id: "manual_fallback",
+      status: "in_review",
+      decision: "In Review",
+      vendor_data: user.id,
+      document_type: documentType,
+      document_number_masked: maskedNumber,
+      issuing_country: issuingCountry.trim(),
+      extracted_full_name: profile?.full_name || null,
+      raw_payload: {
+        provider: "manual",
+        source: "manual_fallback_form",
+        document_type: documentType,
+        issuing_country: issuingCountry.trim(),
+        document_number_full: documentNumber.trim(),
+        submitted_at: nowIso,
+      },
+    })
+    .select("id")
+    .single();
+
+  if (insertError) {
+    console.error("Manual KYC insert error:", insertError);
+    return { error: "Failed to record KYC submission. Please try again." };
+  }
+
+  // 2. Sync Auth user metadata
   try {
-    const adminClient = createAdminClient();
     await adminClient.auth.admin.updateUserById(user.id, {
       user_metadata: {
         kyc_status: "pending",
-        kyc_document_type: documentType,
-        kyc_country: issuingCountry,
+        didit_session_id: manualSessionId,
       },
     });
-  } catch (err) {
-    console.warn("Auth metadata update warning:", err);
+  } catch (e) {
+    console.warn("Could not update auth metadata:", e);
   }
 
-  try {
-    await supabase
-      .from("profiles")
-      .update({
-        kyc_status: "pending",
-        country: issuingCountry,
-      })
-      .eq("id", user.id);
-  } catch {
-    // Non-fatal if column not yet added
+  // 3. Update profile status to 'pending' so UI shows "Pending review"
+  const { error: profileUpdateError } = await adminClient
+    .from("profiles")
+    .update({
+      kyc_status: "pending",
+      kyc_rejection_reason: null,
+    })
+    .eq("id", user.id);
+
+  if (profileUpdateError) {
+    return { error: "Verification logged, but failed to update profile status." };
   }
 
+  // 4. Sync onboarding checklist progress step
   try {
-    await supabase.from("fellow_onboarding_progress").upsert({
+    await adminClient.from("fellow_onboarding_progress").upsert({
       user_id: user.id,
       step_id: "step_1_kyc",
       status: "in_review",
       submitted_payload: {
+        sessionId: manualSessionId,
+        provider: "manual",
         documentType,
-        issuingCountry,
-        documentNumber: documentNumber.slice(-4), // mask
+        issuingCountry: issuingCountry.trim(),
+        submittedAt: nowIso,
       },
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     });
   } catch {
-    // Table not yet migrated
+    // Non-fatal
   }
 
   revalidatePath("/dashboard");
   return {
     success: true,
-    message: "Identity documents submitted for manual compliance verification.",
+    verificationId: verification.id,
+    message: "KYC submitted for manual review.",
   };
 }
 
@@ -144,6 +225,17 @@ export async function submitTaxSetup(
   }
 
   revalidatePath("/dashboard");
+  if (user.email) {
+    await notifyOnboardingProgress({
+      userId: user.id,
+      email: user.email,
+      name: legalName,
+      stepKey: "step_2_tax",
+      completedStepLabel: "Payments and Tax Setup",
+      nextStepLabel: "Project Terms (2m)",
+      progressPercent: 33,
+    });
+  }
   return {
     success: true,
     message: "Tax documentation & payout routing successfully filed.",
@@ -206,6 +298,18 @@ export async function submitProjectTerms(
   }
 
   revalidatePath("/dashboard");
+  if (user.email) {
+    await notifyOnboardingProgress({
+      userId: user.id,
+      email: user.email,
+      name: user.user_metadata?.full_name || "Contributor",
+      stepKey: "step_3_terms",
+      completedStepLabel: "Project Master Terms & NDA",
+      nextStepLabel: "Project Assessment (10m)",
+      progressPercent: 50,
+      unlocksAssessment: true,
+    });
+  }
   return {
     success: true,
     message: "Project Master Terms & Non-Disclosure Agreement acknowledged.",
@@ -244,8 +348,6 @@ export async function submitAssessmentTask(
     };
   }
 
-  // Model A represents the accurate formula (40/7 ≈ 5.71Ω or CAS concurrency proof)
-  // Award score based on identifying accurate reasoning and quality justification
   let computedScore = 85;
   if (payload.preference === "modelA") {
     computedScore += 10;
@@ -285,6 +387,19 @@ export async function submitAssessmentTask(
     };
   }
 
+  if (user.email) {
+    const isFinalAssessment = stepId === "step_4_assessment_150m";
+    await notifyOnboardingProgress({
+      userId: user.id,
+      email: user.email,
+      name: user.user_metadata?.full_name || "Contributor",
+      stepKey: stepId,
+      completedStepLabel: `Project Assessment (${computedScore}%)`,
+      nextStepLabel: isFinalAssessment ? "Qualifications & Tooling Check" : "Next Screening Module",
+      progressPercent: isFinalAssessment ? 83 : 67,
+    });
+  }
+
   return {
     success: true,
     score: computedScore,
@@ -321,6 +436,18 @@ export async function submitTechnicalCheck(
   }
 
   revalidatePath("/dashboard");
+  if (user.email) {
+    const isFinalStep = checkType !== "tech_suite";
+    await notifyOnboardingProgress({
+      userId: user.id,
+      email: user.email,
+      name: user.user_metadata?.full_name || "Contributor",
+      stepKey: isFinalStep ? "step_6_next" : "step_5_tech",
+      completedStepLabel: isFinalStep ? "Onboarding Next Steps" : "Qualifications & Tooling Check",
+      nextStepLabel: isFinalStep ? null : "Onboarding Next Steps (6m)",
+      progressPercent: isFinalStep ? 100 : 92,
+    });
+  }
   return {
     success: true,
     message:
@@ -437,8 +564,9 @@ export async function initiateDiditKyc(
         const errText = await sessionRes.text();
         console.error("Didit V3 session creation error:", sessionRes.status, errText);
       }
-    } catch (e: any) {
-      console.warn("Didit API live call warning:", e.message);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Unknown error";
+      console.warn("Didit API live call warning:", message);
     }
   }
 
@@ -492,6 +620,7 @@ export async function initiateDiditKyc(
   try {
     await adminClient.from("kyc_verifications").insert({
       user_id: user.id,
+      provider: "didit",
       session_id: sessionId,
       workflow_id: workflowId || "didit_default",
       status: "pending",
@@ -511,7 +640,10 @@ export async function initiateDiditKyc(
   return { success: true, url: verificationUrl, sessionId };
 }
 
-export async function completeOnboardingTourAction(): Promise<{ success: boolean; error?: string }> {
+export async function completeOnboardingTourAction(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -544,7 +676,10 @@ export async function completeOnboardingTourAction(): Promise<{ success: boolean
   return { success: true };
 }
 
-export async function resetOnboardingTourAction(): Promise<{ success: boolean; error?: string }> {
+export async function resetOnboardingTourAction(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
   const supabase = await createClient();
   const {
     data: { user },

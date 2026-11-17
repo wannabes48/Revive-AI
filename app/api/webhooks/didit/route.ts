@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/server";
+import { notifyOnboardingProgress } from "@/lib/emails/automation";
 
 /**
  * Recursively produces sorted, Unicode-preserved canonical JSON.
@@ -379,7 +380,31 @@ export async function POST(req: NextRequest) {
       } catch {
         // Non-fatal
       }
+
+      if (kycStatus === "verified") {
+        const { data: profile, error: profileError } = await adminClient
+          .from("profiles")
+          .select("email, full_name")
+          .eq("id", userId)
+          .maybeSingle();
+
+        if (profileError) {
+          console.error("Could not fetch profile for KYC approval email:", profileError);
+        } else if (profile?.email) {
+          await notifyOnboardingProgress({
+            userId,
+            email: profile.email,
+            name: profile.full_name || "Contributor",
+            stepKey: "step_1_kyc_approved",
+            completedStepLabel: "Identity Verification (KYC)",
+            nextStepLabel: "Payments and Tax Setup (5m)",
+            progressPercent: 17,
+          });
+        }
+      }
     }
+
+    
 
     // 10. Durable Store in kyc_verifications table for Admin Console
     try {

@@ -138,7 +138,11 @@ function getBaseStyles(): string {
 }
 
 function getSiteUrl(): string {
-  return process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    "https://joinreviveai.com"
+  );
 }
 
 /**
@@ -311,6 +315,246 @@ export function applicationStatusChangedEmail(
     </div>
     <div class="footer">
       Revive AI &bull; Manage your applications and standing at <a href="${siteUrl}/applications">reviveai.com/applications</a>.
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+
+/**
+ * 4. Onboarding Step Completed & Next Step Unlocked Email
+ * Triggered automatically after KYC approval, Tax setup, Terms, Assessments, and Tech checks
+ */
+export function onboardingStepCompletedEmail(
+  name: string,
+  completedStepLabel: string,
+  nextStepLabel: string | null,
+  progressPercent: number
+): string {
+  const siteUrl = getSiteUrl();
+  const isAllComplete = !nextStepLabel || progressPercent >= 100;
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Onboarding Progress Update - Revive AI</title>
+  <style>${getBaseStyles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="logo">Revive<span>AI</span></div>
+    </div>
+    <div class="content">
+      <div style="margin-bottom: 16px;">
+        <span class="badge-teal">${isAllComplete ? "Onboarding 100% Complete" : `Progress: ${progressPercent}% Complete`}</span>
+      </div>
+      <h1>${isAllComplete ? "You're Ready to Start Tasking!" : `Step Completed: ${completedStepLabel}`}</h1>
+      <p class="lead">Great work, ${name}.</p>
+      <p>Your <strong>${completedStepLabel}</strong> milestone has been verified and recorded on your contributor profile.</p>
+
+      ${
+        isAllComplete
+          ? `<div class="note-box">
+               <strong style="display: block; margin-bottom: 4px; color: #0F766E;">Full Workspace Unlocked:</strong>
+               All identity, compliance, and screening requirements are complete. You can now claim active evaluation tasks and earn payouts.
+             </div>`
+          : `<div class="note-box">
+               <strong style="display: block; margin-bottom: 4px; color: #0F766E;">Up Next in Your Checklist:</strong>
+               <strong>${nextStepLabel}</strong> is now unlocked and ready for you to complete.
+             </div>`
+      }
+
+      <div style="margin: 24px 0 16px;">
+        <a href="${siteUrl}/dashboard?tab=ai-work" class="btn">
+          ${isAllComplete ? "Browse Active Projects" : `Continue to ${nextStepLabel}`}
+        </a>
+      </div>
+    </div>
+    <div class="footer">
+      Revive AI &bull; Contributor Onboarding &amp; Compliance<br>
+      Manage your progress anytime at <a href="${siteUrl}/dashboard">joinreviveai.com</a>.
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+/**
+ * 5. Start Your Assessment Email
+ * Triggered when KYC + Terms are cleared or via automated 24h nudge
+ */
+export function startAssessmentEmail(
+  name: string,
+  assessmentTitle = "Project Screening Assessment",
+  estimatedMinutes = 10
+): string {
+  const siteUrl = getSiteUrl();
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Assessment is Unlocked - Revive AI</title>
+  <style>${getBaseStyles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="logo">Revive<span>AI</span></div>
+    </div>
+    <div class="content">
+      <div style="margin-bottom: 16px;">
+        <span class="badge-amber">Action Required &bull; ~${estimatedMinutes} mins</span>
+      </div>
+      <h1>Start Your Screening Assessment</h1>
+      <p class="lead">Hi ${name}, your <strong>${assessmentTitle}</strong> is unlocked and waiting.</p>
+      <p>Passing this benchmark evaluation qualifies you for paid hourly and per-task AI training projects on Revive AI.</p>
+      
+      <div class="note-box">
+        <strong style="display: block; margin-bottom: 4px; color: #0F766E;">Tips Before You Begin:</strong>
+        &bull; Ensure you have an uninterrupted ${estimatedMinutes}-minute window.<br>
+        &bull; Read the evaluation rubric carefully and provide detailed justifications.<br>
+        &bull; All responses must be 100% original human analysis.
+      </div>
+
+      <div style="margin: 24px 0 16px;">
+        <a href="${siteUrl}/dashboard?tab=ai-work" class="btn">Start Assessment Now</a>
+      </div>
+    </div>
+    <div class="footer">
+      Revive AI &bull; Expert Tasking &amp; Benchmark Platform<br>
+      Questions? Visit <a href="${siteUrl}/dashboard">joinreviveai.com</a>.
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+/**
+ * 6. Finish Your Profile Reminder Email
+ * Triggered automatically for users with incomplete KYC, tax setup, or domain bio
+ */
+export function finishProfileReminderEmail(
+  name: string,
+  missingItems: string[]
+): string {
+  const siteUrl = getSiteUrl();
+  const checklistHtml = missingItems
+    .map((item) => `&bull; <strong>${item}</strong>`)
+    .join("<br>");
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Complete Your Contributor Profile - Revive AI</title>
+  <style>${getBaseStyles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="logo">Revive<span>AI</span></div>
+    </div>
+    <div class="content">
+      <div style="margin-bottom: 16px;">
+        <span class="badge-amber">Incomplete Profile</span>
+      </div>
+      <h1>Finish Setting Up Your Profile</h1>
+      <p class="lead">Hi ${name}, you're just a few minutes away from unlocking paid AI evaluation projects.</p>
+      <p>Project leads prioritize contributors with verified identities and complete domain profiles when assigning new high-rate cohorts.</p>
+
+      <div class="note-box">
+        <strong style="display: block; margin-bottom: 6px; color: #0F766E;">Remaining Steps:</strong>
+        ${checklistHtml}
+      </div>
+
+      <div style="margin: 24px 0 16px;">
+        <a href="${siteUrl}/dashboard?tab=ai-work" class="btn">Complete My Profile</a>
+      </div>
+    </div>
+    <div class="footer">
+      Revive AI &bull; Contributor Operations<br>
+      Update your settings at <a href="${siteUrl}/profile">joinreviveai.com/profile</a>.
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+/**
+ * 7. Project Availability Reminder Email
+ * Triggered when new projects open or a user has pending project invitations
+ */
+export function projectAvailabilityReminderEmail(
+  name: string,
+  projects: Array<{
+    title: string;
+    rateLabel: string;
+    description: string;
+  }>
+): string {
+  const siteUrl = getSiteUrl();
+
+  const projectCardsHtml = projects
+    .map(
+      (p) => `
+      <div style="border: 1px solid #D3E2DE; border-radius: 10px; padding: 16px; margin-bottom: 12px; background-color: #F7FAF9;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <strong style="color: #0B2B2B; font-size: 15px;">${p.title}</strong>
+          <span style="color: #0F766E; font-weight: 700; font-size: 13px;"> &bull; ${p.rateLabel}</span>
+        </div>
+        <p style="margin: 0; font-size: 13px; color: #5B7773;">${p.description}</p>
+      </div>
+    `
+    )
+    .join("");
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Projects Available - Revive AI</title>
+  <style>${getBaseStyles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="logo">Revive<span>AI</span></div>
+    </div>
+    <div class="content">
+      <div style="margin-bottom: 16px;">
+        <span class="badge-teal">Open Task Quota Available</span>
+      </div>
+      <h1>Projects Matching Your Profile Are Live</h1>
+      <p class="lead">Hi ${name}, new AI evaluation tasks are open for contributor onboarding.</p>
+      <p>Spots fill on a rolling basis as fellows complete their project screenings. Review the active opportunities below:</p>
+
+      <div style="margin: 20px 0;">
+        ${projectCardsHtml}
+      </div>
+
+      <div style="margin: 24px 0 16px;">
+        <a href="${siteUrl}/dashboard?tab=projects" class="btn">View &amp; Accept Projects</a>
+      </div>
+    </div>
+    <div class="footer">
+      Revive AI &bull; Project Matching &amp; Allocations<br>
+      View all projects at <a href="${siteUrl}/dashboard?tab=projects">joinreviveai.com</a>.
     </div>
   </div>
 </body>

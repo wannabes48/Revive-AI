@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
+import { notifyOnboardingProgress } from "@/lib/emails/automation";
 
 export type AdminKycActionResult = {
   success?: boolean;
@@ -141,6 +142,28 @@ export async function adminOverrideKycStatus(
     revalidatePath("/admin/users");
     revalidatePath("/admin");
     revalidatePath("/dashboard");
+
+    if (newStatus === "verified") {
+      const { data: profile, error: profileError } = await adminClient
+        .from("profiles")
+        .select("email, full_name")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (profileError) {
+        console.error("Could not fetch profile for KYC approval email:", profileError);
+      } else if (profile?.email) {
+        await notifyOnboardingProgress({
+          userId,
+          email: profile.email,
+          name: profile.full_name || "Contributor",
+          stepKey: "step_1_kyc_approved",
+          completedStepLabel: "Identity Verification (KYC)",
+          nextStepLabel: "Payments and Tax Setup (5m)",
+          progressPercent: 17,
+        });
+      }
+    }
 
     return {
       success: true,
