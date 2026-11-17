@@ -151,23 +151,37 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
 
 
   // Submissions
-  const handleKycSubmit = async (e: React.FormEvent) => {
+  const handleKycSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setLoading(true);
-    const fd = new FormData();
-    fd.set("documentType", kycDocType);
-    fd.set("issuingCountry", kycCountry);
-    fd.set("documentNumber", kycDocNumber);
+    e.stopPropagation();
 
-    const res = await submitKycVerification(fd);
-    setLoading(false);
-    if (res.error) {
+  if (!kycCountry.trim() || !kycDocNumber.trim()) {
+    toast.error("Please fill in both your issuing country and document number.");
+    return;
+  }
+    setLoading(true);
+    try {
+      const fd = new FormData();
+      fd.set("documentType", kycDocType);
+      fd.set("issuingCountry", kycCountry);
+      fd.set("documentNumber", kycDocNumber);
+
+      const res = await submitKycVerification(fd);
+
+      if (res?.error) {
       toast.error(res.error);
     } else {
-      toast.success(res.message || "KYC submitted for manual review.");
+      toast.success(res?.message || "KYC submitted for manual review.");
+      setKycDocNumber("");
       setActiveModalStep(null);
       router.refresh();
     }
+  } catch (err: unknown) {
+    console.error("Manual KYC submit error:", err);
+    toast.error("Submission failed. Please check your connection and try again.");
+  } finally {
+    setLoading(false);
+  }
   };
   
 
@@ -576,7 +590,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
 
               <Button
                 type="submit"
-                disabled={loading || !kycDocNumber.trim()}
+                disabled={loading || !kycDocNumber.trim() || !kycCountry.trim()}
                 className="w-full h-9 rounded-lg text-xs font-bold bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
               >
                 {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}

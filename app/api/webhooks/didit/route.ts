@@ -3,10 +3,6 @@ import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/server";
 import { notifyOnboardingProgress } from "@/lib/emails/automation";
 
-/**
- * Recursively produces sorted, Unicode-preserved canonical JSON.
- * Required for Didit X-Signature-V2 verification.
- */
 function canonicalizeJson(obj: any): string {
   if (obj === null || typeof obj !== "object") {
     return JSON.stringify(obj);
@@ -19,9 +15,6 @@ function canonicalizeJson(obj: any): string {
   return "{" + entries.join(",") + "}";
 }
 
-/**
- * Constant-time comparison between two hex strings to prevent timing attacks.
- */
 function safeTimingEqual(a: string, b: string): boolean {
   const cleanA = a.replace(/^sha256=/, "").trim();
   const cleanB = b.replace(/^sha256=/, "").trim();
@@ -37,7 +30,6 @@ function safeTimingEqual(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   try {
-    // 1. Read raw body as text. DO NOT parse JSON before signature verification.
     const rawBody = await req.text();
 
     const sigV2 = req.headers.get("x-signature-v2") || req.headers.get("X-Signature-V2") || "";
@@ -47,7 +39,6 @@ export async function POST(req: NextRequest) {
 
     const webhookSecret = process.env.DIDIT_WEBHOOK_SECRET;
 
-    // 2. Parse JSON body safely to evaluate payload data & signed timestamp
     let payload: any;
     try {
       payload = JSON.parse(rawBody);
@@ -55,12 +46,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Malformed JSON payload" }, { status: 400 });
     }
 
-    // 3. Verify HMAC-SHA256 signature
-    // Supported headers: X-Signature-V2 (canonical), X-Signature (raw bytes), X-Signature-Simple
+    // 1. Verify HMAC-SHA256 signature
     if (webhookSecret && webhookSecret !== "placeholder_webhook_secret") {
       let isVerified = false;
 
-      // Option A: X-Signature-V2 (Recommended by Didit: canonical sorted Unicode JSON)
       if (sigV2) {
         try {
           const canonical = canonicalizeJson(payload);
@@ -68,30 +57,20 @@ export async function POST(req: NextRequest) {
             .createHmac("sha256", webhookSecret)
             .update(canonical, "utf8")
             .digest("hex");
-          if (safeTimingEqual(sigV2, computedV2)) {
-            isVerified = true;
-          }
-        } catch (v2Err) {
-          console.warn("X-Signature-V2 evaluation notice:", v2Err);
-        }
+          if (safeTimingEqual(sigV2, computedV2)) isVerified = true;
+        } catch {}
       }
 
-      // Option B: X-Signature (Raw body exact bytes)
       if (!isVerified && sigRaw) {
         try {
           const computedRaw = crypto
             .createHmac("sha256", webhookSecret)
             .update(rawBody, "utf8")
             .digest("hex");
-          if (safeTimingEqual(sigRaw, computedRaw)) {
-            isVerified = true;
-          }
-        } catch (rawErr) {
-          console.warn("X-Signature evaluation notice:", rawErr);
-        }
+          if (safeTimingEqual(sigRaw, computedRaw)) isVerified = true;
+        } catch {}
       }
 
-      // Option C: X-Signature-Simple fallback ("{timestamp}:{session_id}:{status}:{webhook_type}")
       if (!isVerified && sigSimple) {
         try {
           const simpleTarget = `${payload.timestamp || payload.created_at || ""}:${
@@ -101,43 +80,31 @@ export async function POST(req: NextRequest) {
             .createHmac("sha256", webhookSecret)
             .update(simpleTarget, "utf8")
             .digest("hex");
-          if (safeTimingEqual(sigSimple, computedSimple)) {
-            isVerified = true;
-          }
-        } catch (simpleErr) {
-          console.warn("X-Signature-Simple evaluation notice:", simpleErr);
-        }
+          if (safeTimingEqual(sigSimple, computedSimple)) isVerified = true;
+        } catch {}
       }
 
       if (!isVerified) {
-        console.error("Didit webhook signature verification failed. Provided headers:", {
-          hasSigV2: Boolean(sigV2),
-          hasSigRaw: Boolean(sigRaw),
-          hasSigSimple: Boolean(sigSimple),
-        });
+        console.error("Didit webhook signature verification failed.");
         return NextResponse.json({ error: "Invalid HMAC signature" }, { status: 401 });
       }
     }
 
-    // 4. Validate SIGNED body timestamp field is fresh (within 300 seconds / 5 minutes)
-    // NEVER use the unsigned X-Timestamp header, which is excluded from the signature
+    // 2. Validate timestamp freshness (within 5 minutes)
     const nowEpochSeconds = Math.floor(Date.now() / 1000);
     const signedTimestamp = Number(payload.timestamp || payload.created_at);
 
     if (signedTimestamp && !isNaN(signedTimestamp)) {
       const driftSeconds = Math.abs(nowEpochSeconds - signedTimestamp);
       if (driftSeconds > 300) {
-        console.error(
-          `Didit webhook rejected: signed timestamp expired (drift: ${driftSeconds}s > 300s). Now: ${nowEpochSeconds}, Payload: ${signedTimestamp}`
-        );
         return NextResponse.json(
-          { error: "Webhook timestamp expired (replay attack prevention). Must be within 5m." },
+          { error: "Webhook timestamp expired." },
           { status: 400 }
         );
       }
     }
 
-    // 5. Extract Envelope identifiers
+    // 3. Extract session & status
     const sessionObj = payload.session || payload;
     const sessionId =
       payload.session_id ||
@@ -147,57 +114,60 @@ export async function POST(req: NextRequest) {
       "unknown_session";
 
     const webhookType = payload.webhook_type || "status.updated";
-    const rawStatus = (
+    const rawStatus = String(
       payload.status ||
       payload.decision?.status ||
       sessionObj.status ||
       ""
-    ).toString();
+    ).trim();
+    const lowerStatus = rawStatus.toLowerCase();
 
-    const eventId =
-      payload.event_id || `${sessionId}_${rawStatus}_${webhookType}_${signedTimestamp || nowEpochSeconds}`;
+    const adminClient = createAdminClient();
+    const nowIso = new Date().toISOString();
 
-    // Fellow Supabase UUID is passed via vendor_data during session creation
-    const userId =
+    // 4. Resolve userId from vendor_data OR fallback lookup by session_id
+    let userId: string | undefined =
       payload.vendor_data ||
       sessionObj.vendor_data ||
       payload.metadata?.user_id ||
       payload.user_id;
 
-    const adminClient = createAdminClient();
-    const nowIso = new Date().toISOString();
+    if (!userId && sessionId !== "unknown_session") {
+      const { data: existingSession } = await adminClient
+        .from("kyc_verifications")
+        .select("user_id")
+        .eq("session_id", sessionId)
+        .maybeSingle();
 
-    // 6. Deduplicate idempotently on event_id using atomic store
+      if (existingSession?.user_id) {
+        userId = existingSession.user_id;
+      }
+    }
+
+    const eventId =
+      payload.event_id || `${sessionId}_${lowerStatus}_${webhookType}_${signedTimestamp || nowEpochSeconds}`;
+
+    // 5. Deduplicate idempotently on event_id
     try {
       const { error: dedupeError } = await adminClient.from("didit_webhook_events").insert({
         event_id: eventId,
         session_id: sessionId,
         webhook_type: webhookType,
-        status: rawStatus,
+        status: lowerStatus,
         vendor_data: userId || null,
         processed_at: nowIso,
         raw_payload: payload,
       });
 
-      if (dedupeError) {
-        // Unique violation code: 23505
-        if (dedupeError.code === "23505" || dedupeError.message?.includes("duplicate")) {
-          return NextResponse.json(
-            {
-              received: true,
-              deduplicated: true,
-              event_id: eventId,
-              message: "Event already processed idempotently.",
-            },
-            { status: 200 }
-          );
-        }
+      if (dedupeError && (dedupeError.code === "23505" || dedupeError.message?.includes("duplicate"))) {
+        return NextResponse.json(
+          { received: true, deduplicated: true, event_id: eventId },
+          { status: 200 }
+        );
       }
-    } catch {
-      // Table may not yet be migrated in dev sandbox
-    }
+    } catch {}
 
-    // 7. Parse V3 Decision Object & Features
+    // 6. Parse V3 Decision Object & Features
     const decision = payload.decision || {};
     const idVerifications = Array.isArray(decision.id_verifications) ? decision.id_verifications : [];
     const livenessChecks = Array.isArray(decision.liveness_checks) ? decision.liveness_checks : [];
@@ -205,23 +175,18 @@ export async function POST(req: NextRequest) {
     const amlScreenings = Array.isArray(decision.aml_screenings) ? decision.aml_screenings : [];
     const ipAnalyses = Array.isArray(decision.ip_analyses) ? decision.ip_analyses : [];
 
-    // Extract primary document metadata
     const primaryId = idVerifications[0] || payload.document || sessionObj.document || {};
     const documentType =
-      primaryId.type ||
-      primaryId.document_type ||
-      primaryId.category ||
-      payload.document_type ||
-      null;
+      primaryId.type || primaryId.document_type || primaryId.category || payload.document_type || null;
 
     const countryCode =
-      primaryId.issuing_country ||
-      primaryId.country ||
-      primaryId.country_code ||
-      payload.country_code ||
+      primaryId.issuing_country || primaryId.country || primaryId.country_code || payload.country_code || null;
+
+    const extractedFullName =
+      primaryId.full_name ||
+      [primaryId.first_name, primaryId.last_name].filter(Boolean).join(" ") ||
       null;
 
-    // Collect decline warnings & reasons across all V3 feature nodes
     const declineReasons: string[] = [];
     if (payload.decline_reasons) {
       if (Array.isArray(payload.decline_reasons)) declineReasons.push(...payload.decline_reasons);
@@ -229,168 +194,118 @@ export async function POST(req: NextRequest) {
     }
     [...idVerifications, ...livenessChecks, ...faceMatches, ...amlScreenings, ...ipAnalyses].forEach(
       (node: any) => {
-        if (Array.isArray(node.warnings)) {
-          declineReasons.push(...node.warnings);
-        } else if (node.warning) {
-          declineReasons.push(String(node.warning));
-        }
-        if (node.status === "Declined" && node.declined_reason) {
+        if (Array.isArray(node.warnings)) declineReasons.push(...node.warnings);
+        else if (node.warning) declineReasons.push(String(node.warning));
+        if (String(node.status).toLowerCase() === "declined" && node.declined_reason) {
           declineReasons.push(String(node.declined_reason));
         }
       }
     );
 
-    const livenessPassed = livenessChecks.length > 0 ? livenessChecks.every((l: any) => l.status === "Approved") : null;
-    const amlPassed = amlScreenings.length > 0 ? amlScreenings.every((a: any) => a.status === "Approved" || !a.hits?.length) : null;
-    const ipRiskScore = ipAnalyses[0]?.risk_score ? Number(ipAnalyses[0].risk_score) : null;
+    const livenessPassed =
+      livenessChecks.length > 0
+        ? livenessChecks.every((l: any) => String(l.status).toLowerCase() === "approved")
+        : null;
+    const amlPassed =
+      amlScreenings.length > 0
+        ? amlScreenings.every((a: any) => String(a.status).toLowerCase() === "approved" || !a.hits?.length)
+        : null;
+    const ipRiskScore = ipAnalyses[0]?.risk_score != null ? Number(ipAnalyses[0].risk_score) : null;
 
-    // 8. Map status to profiles.kyc_status & onboarding checklist gate
-    // Status enum: "Approved" | "Declined" | "In Review" | "In Progress" | "Not Started" | "Abandoned" | "Expired" | "KYC Expired" | "Resubmitted"
-    const lowerStatus = rawStatus.toLowerCase();
+    // 7. Map normalized lowercase status cleanly
     let kycStatus: "verified" | "pending" | "in_progress" | "rejected" | "expired" | "abandoned" = "pending";
     let fellowStatus: "completed" | "in_review" | "failed" = "in_review";
 
-    switch (rawStatus) {
-      case "Approved":
-        kycStatus = "verified";
-        fellowStatus = "completed";
-        break;
-      case "Declined":
-        kycStatus = "rejected";
-        fellowStatus = "failed";
-        break;
-      case "In Review":
-      case "Resubmitted":
-        kycStatus = "pending";
-        fellowStatus = "in_review";
-        break;
-      case "In Progress":
-        kycStatus = "in_progress";
-        fellowStatus = "in_review";
-        break;
-      case "Abandoned":
-        kycStatus = "abandoned";
-        fellowStatus = "in_review";
-        break;
-      case "Expired":
-      case "KYC Expired":
-        kycStatus = "expired";
-        fellowStatus = "failed";
-        break;
-      default:
-        if (lowerStatus.includes("approv") || lowerStatus === "verified") {
-          kycStatus = "verified";
-          fellowStatus = "completed";
-        } else if (lowerStatus.includes("declin") || lowerStatus.includes("fail") || lowerStatus.includes("reject")) {
-          kycStatus = "rejected";
-          fellowStatus = "failed";
-        } else if (lowerStatus.includes("progress")) {
-          kycStatus = "in_progress";
-          fellowStatus = "in_review";
-        } else {
-          kycStatus = "pending";
-          fellowStatus = "in_review";
-        }
-        break;
+    if (lowerStatus === "approved" || lowerStatus === "verified") {
+      kycStatus = "verified";
+      fellowStatus = "completed";
+    } else if (lowerStatus === "declined" || lowerStatus === "rejected" || lowerStatus === "failed") {
+      kycStatus = "rejected";
+      fellowStatus = "failed";
+    } else if (lowerStatus === "in review" || lowerStatus === "in_review" || lowerStatus === "resubmitted") {
+      kycStatus = "pending";
+      fellowStatus = "in_review";
+    } else if (lowerStatus === "in progress" || lowerStatus === "in_progress") {
+      kycStatus = "in_progress";
+      fellowStatus = "in_review";
+    } else if (lowerStatus === "abandoned") {
+      kycStatus = "abandoned";
+      fellowStatus = "in_review";
+    } else if (lowerStatus === "expired" || lowerStatus === "kyc expired") {
+      kycStatus = "expired";
+      fellowStatus = "failed";
     }
 
-    // 9. Update database records if userId is available
+    // 8. Update user records safely (isolated queries so missing optional columns never block kyc_status)
     if (userId) {
-      // Auth user metadata
-      try {
-        await adminClient.auth.admin.updateUserById(userId, {
+      // A. Auth user metadata
+      await adminClient.auth.admin
+        .updateUserById(userId, {
           user_metadata: {
             kyc_status: kycStatus,
             didit_session_id: sessionId,
             kyc_verified_at: kycStatus === "verified" ? nowIso : null,
           },
-        });
-      } catch (err) {
-        console.warn("Auth user metadata sync warning:", err);
+        })
+        .catch((err) => console.warn("Auth metadata sync warning:", err));
+
+      // B. Core profiles.kyc_status update (isolated so optional columns cannot fail it)
+      const { error: coreProfileErr } = await adminClient
+        .from("profiles")
+        .update({ kyc_status: kycStatus })
+        .eq("id", userId);
+
+      if (coreProfileErr) {
+        console.error("CRITICAL: Failed updating profiles.kyc_status:", coreProfileErr);
       }
 
-      // Profiles table
-      try {
-        const profileUpdates: any = {
-          kyc_status: kycStatus,
-          didit_session_id: sessionId,
-          kyc_verified_at: kycStatus === "verified" ? nowIso : null,
-        };
-        if (countryCode) {
-          profileUpdates.country = countryCode;
-          profileUpdates.country_code = countryCode;
-        }
-        await adminClient.from("profiles").update(profileUpdates).eq("id", userId);
-      } catch (err) {
-        console.warn("Profile update warning:", err);
+      // C. Optional profile metadata (best-effort)
+      if (countryCode) {
+        await adminClient
+          .from("profiles")
+          .update({ country_code: countryCode })
+          .eq("id", userId)
+          .then(() => {});
       }
 
-      // Fellow Onboarding Progress (Step 1)
-      try {
-        await adminClient.from("fellow_onboarding_progress").upsert({
-          user_id: userId,
-          step_id: "step_1_kyc",
-          status: fellowStatus,
-          score: kycStatus === "verified" ? 100 : null,
-          submitted_payload: {
-            sessionId,
-            provider: "didit.me",
-            webhookType,
-            decision: rawStatus,
-            documentType,
-            countryCode,
-            livenessPassed,
-            amlPassed,
-            processedAt: nowIso,
+      // D. Fellow Onboarding Progress (Step 1)
+      const { error: onboardingProgressErr } = await adminClient
+        .from("fellow_onboarding_progress")
+        .upsert(
+          {
+            user_id: userId,
+            step_id: "step_1_kyc",
+            status: fellowStatus,
+            score: kycStatus === "verified" ? 100 : null,
+            submitted_payload: {
+              sessionId,
+              provider: "didit.me",
+              webhookType,
+              decision: rawStatus,
+              documentType,
+              countryCode,
+              livenessPassed,
+              amlPassed,
+              processedAt: nowIso,
+            },
+            updated_at: nowIso,
           },
-          updated_at: nowIso,
-        });
-      } catch {
-        // Non-fatal
+          { onConflict: "user_id,step_id" }
+        );
+
+      if (onboardingProgressErr) {
+        console.warn("Onboarding progress upsert warning:", onboardingProgressErr);
       }
 
-      // Contributor notification
-      try {
-        let notifTitle = "Identity Verification Update";
-        let notifBody = "Your Didit verification documents have been received.";
-
-        if (kycStatus === "verified") {
-          notifTitle = "Identity Verified! Onboarding Step 2 Unlocked";
-          notifBody =
-            "Your sovereign identity check has been approved. You may now complete your tax and payment setup.";
-        } else if (kycStatus === "rejected") {
-          notifTitle = "Identity Verification Needs Attention";
-          notifBody =
-            "Your identity document could not be approved. Please review requirements and resubmit, or reach out to support.";
-        } else if (kycStatus === "in_progress") {
-          notifTitle = "Verification in Progress";
-          notifBody = "Your identity session is currently active and awaiting completion.";
-        } else if (kycStatus === "expired") {
-          notifTitle = "Verification Session Expired";
-          notifBody = "Your verification session timed out. Please restart verification from the checklist.";
-        }
-
-        await adminClient.from("notifications").insert({
-          user_id: userId,
-          type: "admin_message",
-          title: notifTitle,
-          body: notifBody,
-          href: "/dashboard?tab=ai-work",
-        });
-      } catch {
-        // Non-fatal
-      }
-
+      // E. In-app notification & automated email on approval
       if (kycStatus === "verified") {
-        const { data: profile, error: profileError } = await adminClient
+        const { data: profile } = await adminClient
           .from("profiles")
           .select("email, full_name")
           .eq("id", userId)
           .maybeSingle();
 
-        if (profileError) {
-          console.error("Could not fetch profile for KYC approval email:", profileError);
-        } else if (profile?.email) {
+        if (profile?.email) {
           await notifyOnboardingProgress({
             userId,
             email: profile.email,
@@ -404,66 +319,38 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    
+    // 9. Update kyc_verifications table for Admin Console
+    const { error: kycTableErr } = await adminClient
+      .from("kyc_verifications")
+      .update({
+        user_id: userId || null,
+        event_id: eventId,
+        webhook_type: webhookType,
+        status: kycStatus === "verified" ? "approved" : kycStatus === "rejected" ? "declined" : kycStatus,
+        decision: rawStatus,
+        document_type: documentType,
+        issuing_country: countryCode,
+        extracted_full_name: extractedFullName,
+        ip_risk_score: ipRiskScore,
+        liveness_passed: livenessPassed,
+        aml_passed: amlPassed,
+        warnings: declineReasons.length > 0 ? declineReasons : null,
+        raw_payload: payload,
+        updated_at: nowIso,
+      })
+      .eq("session_id", sessionId);
 
-    // 10. Durable Store in kyc_verifications table for Admin Console
-    try {
-      await adminClient.from("kyc_verifications").upsert(
-        {
-          user_id: userId || null,
-          session_id: sessionId,
-          event_id: eventId,
-          webhook_type: webhookType,
-          workflow_id: payload.workflow_id || sessionObj.workflow_id || "didit_default",
-          status: kycStatus,
-          decision: rawStatus,
-          document_type: documentType,
-          country_code: countryCode,
-          vendor_data: userId || null,
-          verified_at: kycStatus === "verified" ? nowIso : null,
-          decline_reasons: declineReasons.length > 0 ? declineReasons : null,
-          warnings: declineReasons.length > 0 ? declineReasons : null,
-          ip_risk_score: ipRiskScore,
-          liveness_passed: livenessPassed,
-          aml_passed: amlPassed,
-          raw_payload: payload,
-          updated_at: nowIso,
-        },
-        { onConflict: "session_id" }
-      );
-    } catch (upsertErr) {
-      // Fallback insert if session_id conflict constraint is missing
-      try {
-        await adminClient.from("kyc_verifications").insert({
-          user_id: userId || null,
-          session_id: sessionId,
-          event_id: eventId,
-          webhook_type: webhookType,
-          workflow_id: payload.workflow_id || sessionObj.workflow_id || "didit_default",
-          status: kycStatus,
-          decision: rawStatus,
-          document_type: documentType,
-          country_code: countryCode,
-          vendor_data: userId || null,
-          verified_at: kycStatus === "verified" ? nowIso : null,
-          decline_reasons: declineReasons.length > 0 ? declineReasons : null,
-          raw_payload: payload,
-          updated_at: nowIso,
-        });
-      } catch {
-        // Table fallback
-      }
+    if (kycTableErr) {
+      console.warn("kyc_verifications update warning:", kycTableErr);
     }
 
-    // 11. Return 2xx HTTP response immediately
     return NextResponse.json(
       {
         received: true,
         event_id: eventId,
         session_id: sessionId,
-        webhook_type: webhookType,
         status: kycStatus,
-        decision: rawStatus,
+        userIdResolved: Boolean(userId),
       },
       { status: 200 }
     );

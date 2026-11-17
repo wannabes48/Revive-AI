@@ -51,29 +51,49 @@ export async function submitKycVerification(
   const maskedNumber = maskDocumentNumber(documentNumber);
   const adminClient = createAdminClient();
 
-  // Prevent duplicate pending manual reviews
-  const { data: existingPending } = await adminClient
+  // Only block submissions that are already under manual review.
+  const { data: activeReview, error: activeReviewError } = await adminClient
     .from("kyc_verifications")
     .select("id")
     .eq("user_id", user.id)
-    .in("status", ["pending", "in_review"])
+    .eq("status", "in_review")
     .maybeSingle();
 
-  if (existingPending) {
-    return { error: "You already have a verification currently under review." };
+  if (activeReviewError) {
+    console.error("Could not check active KYC reviews:", activeReviewError);
+    return { error: `Database error: ${activeReviewError.message}` };
   }
 
-  // Fetch user's profile name to populate extracted_full_name for admin comparison
-  const { data: profile } = await adminClient
+  if (activeReview) {
+    return { error: "You already have a verification currently under manual review." };
+  }
+
+  // Supersede abandoned Didit sessions before creating the manual review.
+  const { error: expirePendingError } = await adminClient
+    .from("kyc_verifications")
+    .update({ status: "expired" })
+    .eq("user_id", user.id)
+    .eq("status", "pending");
+
+  if (expirePendingError) {
+    console.error("Could not expire abandoned KYC sessions:", expirePendingError);
+    return { error: `Database error: ${expirePendingError.message}` };
+  }
+
+  const { data: profile, error: profileError } = await adminClient
     .from("profiles")
     .select("full_name")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
+
+  if (profileError) {
+    console.warn("Could not fetch profile name for manual KYC submission:", profileError);
+  }
 
   const manualSessionId = `manual_${crypto.randomUUID()}`;
   const nowIso = new Date().toISOString();
 
-  // 1. Insert into kyc_verifications (triggers audit log into didit_webhook_events)
+  // Insert the manual submission.
   const { data: verification, error: insertError } = await adminClient
     .from("kyc_verifications")
     .insert({
@@ -89,7 +109,7 @@ export async function submitKycVerification(
       document_type: documentType,
       document_number_masked: maskedNumber,
       issuing_country: issuingCountry.trim(),
-      extracted_full_name: profile?.full_name || null,
+      extracted_full_name: profile?.full_name || user.user_metadata?.full_name || null,
       raw_payload: {
         provider: "manual",
         source: "manual_fallback_form",
@@ -104,7 +124,7 @@ export async function submitKycVerification(
 
   if (insertError) {
     console.error("Manual KYC insert error:", insertError);
-    return { error: "Failed to record KYC submission. Please try again." };
+    return { error: `Database error: ${insertError.message}` };
   }
 
   // 2. Sync Auth user metadata
