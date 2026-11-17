@@ -1,7 +1,87 @@
-import { type NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/middleware";
 
+// All 54 African sovereign states (ISO 3166-1 alpha-2 codes)
+const BLOCKED_AFRICAN_COUNTRIES = new Set([
+  "DZ", // Algeria
+  "AO", // Angola
+  "BJ", // Benin
+  "BW", // Botswana
+  "BF", // Burkina Faso
+  "BI", // Burundi
+  "CV", // Cabo Verde
+  "CM", // Cameroon
+  "CF", // Central African Republic
+  "TD", // Chad
+  "KM", // Comoros
+  "CG", // Congo (Republic of the)
+  "CD", // Congo (Democratic Republic of the)
+  "CI", // Côte d'Ivoire
+  "DJ", // Djibouti
+  "EG", // Egypt
+  "GQ", // Equatorial Guinea
+  "ER", // Eritrea
+  "SZ", // Eswatini
+  "ET", // Ethiopia
+  "GA", // Gabon
+  "GM", // Gambia
+  "GH", // Ghana
+  "GN", // Guinea
+  "GW", // Guinea-Bissau
+  "KE", // Kenya
+  "LS", // Lesotho
+  "LR", // Liberia
+  "LY", // Libya
+  "MG", // Madagascar
+  "MW", // Malawi
+  "ML", // Mali
+  "MR", // Mauritania
+  "MU", // Mauritius
+  "MA", // Morocco
+  "MZ", // Mozambique
+  "NA", // Namibia
+  "NE", // Niger
+  "NG", // Nigeria
+  "RW", // Rwanda
+  "ST", // São Tomé and Príncipe
+  "SN", // Senegal
+  "SC", // Seychelles
+  "SL", // Sierra Leone
+  "SO", // Somalia
+  "ZA", // South Africa
+  "SS", // South Sudan
+  "SD", // Sudan
+  "TZ", // Tanzania
+  "TG", // Togo
+  "TN", // Tunisia
+  "UG", // Uganda
+  "ZM", // Zambia
+  "ZW", // Zimbabwe
+]);
+
 export async function middleware(request: NextRequest) {
+  // 1. Allow webhooks (e.g., Didit.me) to bypass geoblocking so server callbacks never fail
+  if (request.nextUrl.pathname.startsWith("/api/webhooks")) {
+    return NextResponse.next();
+  }
+
+  // 2. Read ISO-2 country code injected by Vercel or Cloudflare at the edge
+  const country =
+    request.headers.get("x-vercel-ip-country") ??
+    request.headers.get("cf-ipcountry") ??
+    (request as NextRequest & { geo?: { country?: string } }).geo?.country;
+
+  if (country && BLOCKED_AFRICAN_COUNTRIES.has(country.toUpperCase())) {
+    return new NextResponse(
+      "Access Denied: This service is currently unavailable in your region.",
+      {
+        status: 403,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  // 3. Proceed with Supabase Auth session refresh
   return await updateSession(request);
 }
 
