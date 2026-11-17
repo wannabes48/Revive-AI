@@ -280,15 +280,15 @@ export default function SignupPage() {
                 />
                 <span className="text-[11px] text-muted-foreground leading-relaxed">
                   I agree to the{" "}
-                  <Link href="/" className="text-[#0F766E] underline hover:text-[#115E59]">
+                  <Link href="/terms" className="text-[#0F766E] underline hover:text-[#115E59]">
                     Terms of Service
                   </Link>
                   , strict model{" "}
-                  <Link href="/" className="text-[#0F766E] underline hover:text-[#115E59]">
+                  <Link href="/nda" className="text-[#0F766E] underline hover:text-[#115E59]">
                     Confidentiality Precursor (NDA)
                   </Link>
                   , and the{" "}
-                  <Link href="/" className="text-[#0F766E] underline hover:text-[#115E59]">
+                  <Link href="/code-of-conduct" className="text-[#0F766E] underline hover:text-[#115E59]">
                     Expert Code of Conduct
                   </Link>
                   .

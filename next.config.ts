@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  experimental: {
+    // ...preserve existing experimental options
+    agentUpgrade: "security",
+  },
 };
 
 export default nextConfig;
