@@ -7,26 +7,9 @@ import {
   ProjectInvitation,
   OpenOpportunity,
 } from "@/lib/supabase/types";
+import { resolveOnboardingSteps, type OnboardingStepState } from "@/lib/onboarding-steps";
 
-export interface OnboardingStepState {
-  id: string;
-  index: number;
-  title: string;
-  estimatedMinutes: number;
-  type:
-    | "identity_kyc"
-    | "tax_setup"
-    | "terms_nda"
-    | "timed_assessment"
-    | "technical_check"
-    | "next_steps";
-  status: "locked" | "available" | "in_review" | "completed" | "failed";
-  badgeText?: string;
-  subtext?: string;
-  passingScore?: number;
-  score?: number | null;
-  assessmentPayload?: any;
-}
+export type { OnboardingStepState } from "@/lib/onboarding-steps";
 
 export interface WeeklyEarningsPoint {
   weekLabel: string;
@@ -61,6 +44,12 @@ export interface ContributorDashboardData {
     steps: OnboardingStepState[];
     completedCount: number;
     isFullyUnlocked: boolean;
+    /** Inputs for the Qualifications check step. */
+    qualifications: {
+      resumeFilename: string | null;
+      expertise: string | null;
+      skillsCount: number;
+    };
   };
   projects: {
     current: Project[];
@@ -97,7 +86,6 @@ export async function getContributorProjectsAndAnalytics(
     payoutsRes,
     subsRes,
     timeEntriesRes,
-    stepsRes,
     progressRes,
   ] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).single(),
@@ -122,245 +110,20 @@ export async function getContributorProjectsAndAnalytics(
       .eq("user_id", userId)
       .order("work_date", { ascending: false }),
     supabase
-      .from("project_onboarding_steps")
-      .select("*")
-      .order("step_index", { ascending: true }),
-    supabase
       .from("fellow_onboarding_progress")
       .select("*")
       .eq("user_id", userId),
   ]);
 
   const profile = profileRes.data;
-  const userKycStatus = (profile as any)?.kyc_status || "unverified";
-  const userTermsAccepted = Boolean((profile as any)?.terms_accepted_at);
-  const userPayoutConfigured = Boolean((profile as any)?.payout_method_configured);
   const referralCode =
     (profile as any)?.referral_code || `REV-${userId.slice(0, 6).toUpperCase()}`;
 
-  // 2. Resolve steps and progress
-  const dbSteps = stepsRes.data || [];
-  const dbProgress = progressRes.data || [];
-
-  // Define the canonical sequential linear onboarding checklist
-  const rawStepDefinitions: {
-    id: string;
-    index: number;
-    title: string;
-    estimatedMinutes: number;
-    type: OnboardingStepState["type"];
-    defaultSubtext: string;
-    passingScore?: number;
-    assessmentPayload?: any;
-  }[] = [
-    {
-      id: "step_1_kyc",
-      index: 1,
-      title: "Confirm identity (2m)",
-      estimatedMinutes: 2,
-      type: "identity_kyc",
-      defaultSubtext:
-        userKycStatus === "pending"
-          ? "Your identity verification is in manual review."
-          : userKycStatus === "verified"
-          ? "Identity successfully verified via Didit.me."
-          : "Sovereign biometric & ID verification powered by Didit.me.",
-    },
-    {
-      id: "step_2_tax",
-      index: 2,
-      title: "Payments and tax setup (5m)",
-      estimatedMinutes: 5,
-      type: "tax_setup",
-      defaultSubtext: "Direct deposit setup and W-9 or W-8BEN form submission.",
-    },
-    {
-      id: "step_3_terms",
-      index: 3,
-      title: "Project Terms (2m)",
-      estimatedMinutes: 2,
-      type: "terms_nda",
-      defaultSubtext: "Terms of service and confidential project non-disclosure agreement.",
-    },
-    {
-      id: "step_4_assessment_10m",
-      index: 4,
-      title: "Project assessment (10m)",
-      estimatedMinutes: 10,
-      type: "timed_assessment",
-      defaultSubtext: "Prompt verification: instruction compliance & factuality scoring.",
-      passingScore: 80,
-      assessmentPayload: {
-        taskName: "Prompt Compliance & Hallucination Benchmark",
-        durationMinutes: 10,
-        modelA: {
-          name: "Model Alpha",
-          response:
-            "To calculate the total resistance of three parallel resistors of 10Ω, 20Ω, and 40Ω:\n1/R = 1/10 + 1/20 + 1/40 = 4/40 + 2/40 + 1/40 = 7/40.\nTherefore R = 40/7 ≈ 5.71Ω. All formulas follow Ohm's Law.",
-        },
-        modelB: {
-          name: "Model Beta",
-          response:
-            "Parallel resistors sum reciprocally: 10 + 20 + 40 = 70. 1/70 is 0.014Ω total resistance. Please ensure adequate circuit cooling.",
-        },
-        guidelines:
-          "Evaluate which model follows proper electrical circuit math without hallucinating parallel impedance principles.",
-      },
-    },
-    {
-      id: "step_4_assessment_120m",
-      index: 5,
-      title: "Project assessment (120m)",
-      estimatedMinutes: 120,
-      type: "timed_assessment",
-      defaultSubtext: "Comprehensive multi-turn RLHF ranking across reasoning depth and citations.",
-      passingScore: 85,
-      assessmentPayload: {
-        taskName: "Advanced Frontier Reasoning & Code Verifier",
-        durationMinutes: 120,
-        modelA: {
-          name: "Model Alpha",
-          response:
-            "```typescript\n// Concurrent lock-free queue using AtomicPointer\nclass LockFreeQueue<T> {\n  // Implementation with rigorous CAS memory ordering\n}\n```\nDetailed proof of wait-freedom and starvation mitigation under high-contention threading.",
-        },
-        modelB: {
-          name: "Model Beta",
-          response:
-            "A standard synchronized mutex is sufficient for almost all queues in Node.js because Javascript is single-threaded.",
-        },
-        guidelines:
-          "Review rigorous multi-threading concurrency primitives and assess mathematical soundness.",
-      },
-    },
-    {
-      id: "step_4_assessment_150m",
-      index: 6,
-      title: "Project assessment (150m)",
-      estimatedMinutes: 150,
-      type: "timed_assessment",
-      defaultSubtext: "Complex multidisciplinary domain calibration and synthetic safety audits.",
-      passingScore: 85,
-      assessmentPayload: {
-        taskName: "Multimodal Frontier Safety & Factuality Benchmark",
-        durationMinutes: 150,
-        modelA: {
-          name: "Model Alpha",
-          response:
-            "Comprehensive constitutional AI critique ensuring zero toxic output while preserving deep academic rigor and citations to primary peer-reviewed literature.",
-        },
-        modelB: {
-          name: "Model Beta",
-          response:
-            "I cannot answer this question because it touches upon scientific concepts that might be misunderstood.",
-        },
-        guidelines:
-          "Grade responses on balanced calibration, avoidance of refusal overreach, and depth of verifiable scientific sources.",
-      },
-    },
-    {
-      id: "step_5_tech",
-      index: 7,
-      title: "Qualifications check (1m)",
-      estimatedMinutes: 1,
-      type: "technical_check",
-      defaultSubtext: "Tooling access, browser compatibility, and environment latency check.",
-    },
-    {
-      id: "step_5_gsuite",
-      index: 8,
-      title: "Google suite access check",
-      estimatedMinutes: 2,
-      type: "technical_check",
-      defaultSubtext: "Google Workspace & Slack enterprise communication channel verification.",
-    },
-    {
-      id: "step_6_next",
-      index: 9,
-      title: "Onboarding Next Steps (6m)",
-      estimatedMinutes: 6,
-      type: "next_steps",
-      defaultSubtext: "Final readiness checklist unlocking your priority production tasks.",
-    },
-  ];
-
-  // Resolve sequential linear gate
-  const progressMap = new Map<string, any>();
-  dbProgress.forEach((p) => progressMap.set(p.step_id, p));
-
-  // Determine completed states from profile & dbProgress
-  const steps: OnboardingStepState[] = [];
-  let isPreviousStepCompleted = true;
-
-  for (let i = 0; i < rawStepDefinitions.length; i++) {
-    const raw = rawStepDefinitions[i];
-    const userProg = progressMap.get(raw.id);
-
-    let status: OnboardingStepState["status"] = "locked";
-    let badgeText: string | undefined;
-    let subtext = raw.defaultSubtext;
-    let score: number | null = userProg?.score ?? null;
-
-    if (raw.type === "identity_kyc") {
-      if (userKycStatus === "verified" || userProg?.status === "completed") {
-        status = "completed";
-        badgeText = "Verified";
-      } else if (userKycStatus === "pending" || userProg?.status === "in_review") {
-        status = "in_review";
-        badgeText = "Pending review";
-      } else {
-        status = isPreviousStepCompleted ? "available" : "locked";
-        badgeText = "Start verification";
-      }
-    } else if (raw.type === "tax_setup") {
-      if (userPayoutConfigured || userProg?.status === "completed") {
-        status = "completed";
-        badgeText = "Completed";
-      } else {
-        status = isPreviousStepCompleted ? "available" : "locked";
-        badgeText = "Set up tax";
-      }
-    } else if (raw.type === "terms_nda") {
-      if (userTermsAccepted || userProg?.status === "completed") {
-        status = "completed";
-        badgeText = "Accepted";
-      } else {
-        status = isPreviousStepCompleted ? "available" : "locked";
-        badgeText = "Review terms";
-      }
-    } else {
-      // Assessments & Tech checks
-      if (userProg?.status === "completed") {
-        status = "completed";
-        badgeText = `Passed (${userProg.score ?? 92}%)`;
-      } else if (userProg?.status === "failed") {
-        status = "failed";
-        badgeText = `Failed (${userProg.score}%)`;
-      } else if (userProg?.status === "in_progress") {
-        status = isPreviousStepCompleted ? "available" : "locked";
-        badgeText = "Continue";
-      } else {
-        status = isPreviousStepCompleted ? "available" : "locked";
-        badgeText = status === "available" ? "Start" : "Locked";
-      }
-    }
-
-    steps.push({
-      id: raw.id,
-      index: raw.index,
-      title: raw.title,
-      estimatedMinutes: raw.estimatedMinutes,
-      type: raw.type,
-      status,
-      badgeText,
-      subtext,
-      passingScore: raw.passingScore,
-      score,
-      assessmentPayload: raw.assessmentPayload,
-    });
-
-    // In a strict linear gate, the next step is only available if this step is completed
-    isPreviousStepCompleted = status === "completed";
-  }
+  // 2. Resolve the linear onboarding checklist from profile + progress
+  const steps: OnboardingStepState[] = resolveOnboardingSteps(
+    profile as any,
+    (progressRes.data || []) as any
+  );
 
   const completedCount = steps.filter((s) => s.status === "completed").length;
   const isFullyUnlocked = completedCount === steps.length;
@@ -781,6 +544,13 @@ export async function getContributorProjectsAndAnalytics(
       steps,
       completedCount,
       isFullyUnlocked,
+      qualifications: {
+        resumeFilename: (profile as any)?.resume_path
+          ? (profile as any)?.resume_filename || "resume"
+          : null,
+        expertise: (profile as any)?.expertise || null,
+        skillsCount: Array.isArray((profile as any)?.skills) ? (profile as any).skills.length : 0,
+      },
     },
     projects: {
       current: currentProjects,

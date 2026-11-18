@@ -70,6 +70,16 @@ export async function saveExpertise(input: unknown): Promise<ProfileActionResult
     return { error: "Not signed in." };
   }
 
+  const { data: current, error: resumeLookupError } = await supabase
+    .from("profiles")
+    .select("resume_path")
+    .eq("id", user.id)
+    .maybeSingle();
+  // A lookup error means migration 011 isn't applied yet; don't block saving then.
+  if (!resumeLookupError && !current?.resume_path) {
+    return { error: "Please upload your resume before saving your expertise." };
+  }
+
   const { error } = await supabase
     .from("profiles")
     .update({

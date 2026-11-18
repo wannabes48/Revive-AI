@@ -9,6 +9,30 @@ import {
 } from "@/lib/emails/automation";
 import { z } from "zod";
 import { getPublicSiteUrl } from "@/lib/site-url";
+import {
+  ASSESSMENT_GRACE_SECONDS,
+  ASSESSMENT_RETRY_COOLDOWN_HOURS,
+  getAssessment,
+  gradeAssessment,
+  isAssessmentStepId,
+  toPublicAssessment,
+} from "@/lib/assessments";
+import type {
+  AssessmentAnswers,
+  AssessmentResult,
+  AssessmentSession,
+  AssessmentStepId,
+} from "@/lib/assessment-types";
+import {
+  getStepDefinition,
+  isStepUnlocked,
+  nextStepAfter,
+  progressPercentAfter,
+  resolveOnboardingSteps,
+  type OnboardingProgressRow,
+  type OnboardingStepState,
+} from "@/lib/onboarding-steps";
+import type { Profile } from "@/lib/supabase/types";
 
 const manualKycSchema = z.object({
   documentType: z.enum(["passport", "national_id", "driver_license"]),
@@ -171,7 +195,7 @@ export async function submitKycVerification(
         submittedAt: nowIso,
       },
       updated_at: nowIso,
-    });
+    }, { onConflict: "user_id,step_id" });
   } catch {
     // Non-fatal
   }
@@ -183,6 +207,74 @@ export async function submitKycVerification(
     verificationId: verification.id,
     message: "KYC submitted for manual review.",
   };
+}
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+
+type ProgressWrite = {
+  user_id: string;
+  step_id: string;
+  status: string;
+  score?: number | null;
+  submitted_payload: Record<string, unknown>;
+};
+
+/** Writes one onboarding step row. Returns an error message instead of failing silently. */
+async function saveProgress(adminClient: AdminClient, row: ProgressWrite): Promise<string | null> {
+  const { error } = await adminClient
+    .from("fellow_onboarding_progress")
+    .upsert({ ...row, updated_at: new Date().toISOString() }, { onConflict: "user_id,step_id" });
+  if (error) {
+    console.error(`Could not save onboarding step ${row.step_id}:`, error);
+    return error.message;
+  }
+  return null;
+}
+
+/** Loads the contributor's profile, raw progress rows and the gated checklist. */
+async function loadOnboardingState(adminClient: AdminClient, userId: string) {
+  const [{ data: profile }, { data: rows, error }] = await Promise.all([
+    adminClient.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    adminClient
+      .from("fellow_onboarding_progress")
+      .select("step_id, status, score, updated_at, submitted_payload")
+      .eq("user_id", userId),
+  ]);
+  if (error) console.error("Could not load onboarding progress:", error);
+  const progress = (rows || []) as OnboardingProgressRow[];
+  return {
+    profile: profile as (Profile & Record<string, unknown>) | null,
+    progress,
+    steps: resolveOnboardingSteps(profile as Profile | null, progress),
+  };
+}
+
+async function notifyStepCompleted(
+  user: { id: string; email?: string | null; user_metadata?: Record<string, unknown> },
+  stepId: string,
+  completedLabel?: string
+) {
+  if (!user.email) return;
+  const def = getStepDefinition(stepId);
+  const next = nextStepAfter(stepId);
+  await notifyOnboardingProgress({
+    userId: user.id,
+    email: user.email,
+    name: (user.user_metadata?.full_name as string) || "Contributor",
+    stepKey: stepId,
+    completedStepLabel: completedLabel || def?.label || stepId,
+    nextStepLabel: next?.label ?? null,
+    progressPercent: progressPercentAfter(stepId),
+    unlocksAssessment: next?.id === "step_4_assessment_10m",
+  });
+}
+
+function lockedStepError(steps: OnboardingStepState[], stepId: string): string | null {
+  if (isStepUnlocked(steps, stepId)) return null;
+  const blocker = steps.find((s) => s.status !== "completed");
+  return blocker
+    ? `Please complete "${blocker.title}" first.`
+    : "Please complete the previous onboarding steps first.";
 }
 
 export async function submitTaxSetup(
@@ -210,8 +302,9 @@ export async function submitTaxSetup(
     return { error: "You must certify under penalties of perjury to submit tax documentation." };
   }
 
+  const adminClient = createAdminClient();
+
   try {
-    const adminClient = createAdminClient();
     await adminClient.auth.admin.updateUserById(user.id, {
       user_metadata: {
         payout_method_configured: true,
@@ -222,46 +315,30 @@ export async function submitTaxSetup(
     console.warn("Auth metadata warning:", err);
   }
 
-  try {
-    await supabase
-      .from("profiles")
-      .update({
-        payout_method_configured: true,
-      })
-      .eq("id", user.id);
-  } catch {
-    // Non-fatal
+  const { error: profileError } = await adminClient
+    .from("profiles")
+    .update({ payout_method_configured: true })
+    .eq("id", user.id);
+  if (profileError) {
+    console.error("Could not save payout setup:", profileError);
+    return { error: "Could not save your tax setup. Please try again." };
   }
 
-  try {
-    await supabase.from("fellow_onboarding_progress").upsert({
-      user_id: user.id,
-      step_id: "step_2_tax",
-      status: "completed",
-      submitted_payload: {
-        taxFormType,
-        legalName,
-        taxIdLast4: taxId.slice(-4),
-        submittedAt: new Date().toISOString(),
-      },
-      updated_at: new Date().toISOString(),
-    });
-  } catch {
-    // Table not yet migrated
-  }
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: "step_2_tax",
+    status: "completed",
+    submitted_payload: {
+      taxFormType,
+      legalName,
+      taxIdLast4: taxId.slice(-4),
+      submittedAt: new Date().toISOString(),
+    },
+  });
+  if (saveError) console.warn("Tax step saved on profile; progress row warning:", saveError);
 
   revalidatePath("/dashboard");
-  if (user.email) {
-    await notifyOnboardingProgress({
-      userId: user.id,
-      email: user.email,
-      name: legalName,
-      stepKey: "step_2_tax",
-      completedStepLabel: "Payments and Tax Setup",
-      nextStepLabel: "Project Terms (2m)",
-      progressPercent: 33,
-    });
-  }
+  await notifyStepCompleted({ ...user, user_metadata: { full_name: legalName } }, "step_2_tax");
   return {
     success: true,
     message: "Tax documentation & payout routing successfully filed.",
@@ -285,9 +362,9 @@ export async function submitProjectTerms(
   }
 
   const now = new Date().toISOString();
+  const adminClient = createAdminClient();
 
   try {
-    const adminClient = createAdminClient();
     await adminClient.auth.admin.updateUserById(user.id, {
       user_metadata: {
         terms_accepted_at: now,
@@ -297,199 +374,407 @@ export async function submitProjectTerms(
     console.warn("Auth metadata warning:", err);
   }
 
-  try {
-    await supabase
-      .from("profiles")
-      .update({
-        terms_accepted_at: now,
-      })
-      .eq("id", user.id);
-  } catch {
-    // Non-fatal
+  const { error: profileError } = await adminClient
+    .from("profiles")
+    .update({ terms_accepted_at: now })
+    .eq("id", user.id);
+  if (profileError) {
+    console.error("Could not save terms acceptance:", profileError);
+    return { error: "Could not record your acceptance. Please try again." };
   }
 
-  try {
-    await supabase.from("fellow_onboarding_progress").upsert({
-      user_id: user.id,
-      step_id: "step_3_terms",
-      status: "completed",
-      submitted_payload: {
-        acceptedAt: now,
-        version: "2026.1",
-      },
-      updated_at: now,
-    });
-  } catch {
-    // Non-fatal
-  }
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: "step_3_terms",
+    status: "completed",
+    submitted_payload: {
+      acceptedAt: now,
+      version: "2026.1",
+    },
+  });
+  if (saveError) console.warn("Terms saved on profile; progress row warning:", saveError);
 
   revalidatePath("/dashboard");
-  if (user.email) {
-    await notifyOnboardingProgress({
-      userId: user.id,
-      email: user.email,
-      name: user.user_metadata?.full_name || "Contributor",
-      stepKey: "step_3_terms",
-      completedStepLabel: "Project Master Terms & NDA",
-      nextStepLabel: "Project Assessment (10m)",
-      progressPercent: 50,
-      unlocksAssessment: true,
-    });
-  }
+  await notifyStepCompleted(user, "step_3_terms");
   return {
     success: true,
     message: "Project Master Terms & Non-Disclosure Agreement acknowledged.",
   };
 }
 
-export async function submitAssessmentTask(
-  stepId: string,
-  payload: {
-    preference: "modelA" | "modelB" | "equal";
-    justification: string;
-    factualityScore: number;
-    instructionScore: number;
-    antiPlagiarismAgreed: boolean;
-    timeSpentSeconds: number;
-  }
-): Promise<OnboardingActionResult> {
+/* -------------------------------------------------------------------------- */
+/*  Timed assessments                                                         */
+/* -------------------------------------------------------------------------- */
+
+export type AssessmentActionResult = {
+  error?: string;
+  session?: AssessmentSession;
+  result?: AssessmentResult;
+  message?: string;
+};
+
+type AttemptPayload = {
+  attempt?: number;
+  startedAt?: string;
+  expiresAt?: string;
+  retryAvailableAt?: string | null;
+  history?: unknown[];
+};
+
+function readAttempt(row: OnboardingProgressRow | undefined): AttemptPayload {
+  const payload = row?.submitted_payload;
+  return payload && typeof payload === "object" ? (payload as AttemptPayload) : {};
+}
+
+function formatWait(until: Date, now: Date): string {
+  const minutes = Math.max(1, Math.ceil((until.getTime() - now.getTime()) / 60000));
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
+/** Fails an attempt whose timer ran out without a submission. */
+async function expireAttempt(
+  adminClient: AdminClient,
+  userId: string,
+  stepId: AssessmentStepId,
+  attempt: AttemptPayload
+) {
+  const now = new Date();
+  const retryAvailableAt = new Date(
+    now.getTime() + ASSESSMENT_RETRY_COOLDOWN_HOURS * 3600 * 1000
+  ).toISOString();
+  await saveProgress(adminClient, {
+    user_id: userId,
+    step_id: stepId,
+    status: "failed",
+    score: 0,
+    submitted_payload: {
+      ...attempt,
+      timedOut: true,
+      submittedAt: now.toISOString(),
+      retryAvailableAt,
+      history: [
+        ...(attempt.history || []),
+        { attempt: attempt.attempt, score: 0, timedOut: true, at: now.toISOString() },
+      ],
+    },
+  });
+  return retryAvailableAt;
+}
+
+/**
+ * Starts (or resumes) a timed attempt. The timer is enforced on the server from
+ * `startedAt`, so closing the window does not pause it.
+ */
+export async function startAssessment(stepId: string): Promise<AssessmentActionResult> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  if (!user) return { error: "Authentication required." };
+  if (!isAssessmentStepId(stepId)) return { error: "Unknown assessment." };
 
-  if (!user) {
-    return { error: "Authentication required." };
-  }
+  const adminClient = createAdminClient();
+  const { steps, progress } = await loadOnboardingState(adminClient, user.id);
+  const gateError = lockedStepError(steps, stepId);
+  if (gateError) return { error: gateError };
 
-  if (!payload.antiPlagiarismAgreed) {
+  const step = steps.find((s) => s.id === stepId);
+  if (step?.status === "completed") return { error: "You have already passed this assessment." };
+
+  const def = getAssessment(stepId);
+  const row = progress.find((p) => p.step_id === stepId);
+  const previous = readAttempt(row);
+  const now = new Date();
+
+  if (row?.status === "in_progress" && previous.startedAt && previous.expiresAt) {
+    const expires = new Date(previous.expiresAt);
+    if (now.getTime() <= expires.getTime() + ASSESSMENT_GRACE_SECONDS * 1000) {
+      return {
+        session: {
+          assessment: toPublicAssessment(def),
+          startedAt: previous.startedAt,
+          expiresAt: previous.expiresAt,
+          attempt: previous.attempt || 1,
+        },
+      };
+    }
+    const retryAt = await expireAttempt(adminClient, user.id, stepId, previous);
+    revalidatePath("/dashboard");
     return {
-      error: "You must certify that all evaluation ratings and justifications are solely your own work.",
+      error: `Your previous attempt ran out of time and was not submitted. You can retry in ${formatWait(
+        new Date(retryAt),
+        now
+      )}.`,
     };
   }
 
-  if (!payload.justification || payload.justification.trim().length < 25) {
-    return {
-      error: "Please provide a detailed justification for your model evaluation (min 25 characters).",
-    };
+  if (row?.status === "failed" && previous.retryAvailableAt) {
+    const retryAt = new Date(previous.retryAvailableAt);
+    if (retryAt > now) {
+      return { error: `You can retry this assessment in ${formatWait(retryAt, now)}.` };
+    }
   }
 
-  let computedScore = 85;
-  if (payload.preference === "modelA") {
-    computedScore += 10;
-  } else if (payload.preference === "modelB") {
-    computedScore -= 20;
-  }
+  const attempt = (previous.attempt || 0) + 1;
+  const startedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + def.durationMinutes * 60 * 1000).toISOString();
 
-  if (payload.factualityScore >= 4) computedScore += 3;
-  if (payload.instructionScore >= 4) computedScore += 2;
-  computedScore = Math.min(100, Math.max(40, computedScore));
-
-  const passingThreshold = stepId === "step_4_assessment_120m" ? 85 : 80;
-  const passed = computedScore >= passingThreshold;
-
-  try {
-    await supabase.from("fellow_onboarding_progress").upsert({
-      user_id: user.id,
-      step_id: stepId,
-      status: passed ? "completed" : "failed",
-      score: computedScore,
-      submitted_payload: {
-        ...payload,
-        submittedAt: new Date().toISOString(),
-      },
-      updated_at: new Date().toISOString(),
-    });
-  } catch {
-    // Non-fatal
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: stepId,
+    status: "in_progress",
+    score: null,
+    submitted_payload: {
+      attempt,
+      startedAt,
+      expiresAt,
+      history: previous.history || [],
+    },
+  });
+  if (saveError) {
+    return { error: "We couldn't start your assessment. Please try again in a moment." };
   }
 
   revalidatePath("/dashboard");
-
-  if (!passed) {
-    if (user.email) {
-      await notifyAssessmentFailed({
-        userId: user.id,
-        email: user.email,
-        name: user.user_metadata?.full_name || "Contributor",
-        stepId,
-        score: computedScore,
-        threshold: passingThreshold,
-      });
-    }
-    return {
-      error: `Assessment score ${computedScore}% was below the required passing threshold of ${passingThreshold}%. You may review guidelines and retry.`,
-      score: computedScore,
-    };
-  }
-
-  if (user.email) {
-    const isFinalAssessment = stepId === "step_4_assessment_150m";
-    await notifyOnboardingProgress({
-      userId: user.id,
-      email: user.email,
-      name: user.user_metadata?.full_name || "Contributor",
-      stepKey: stepId,
-      completedStepLabel: `Project Assessment (${computedScore}%)`,
-      nextStepLabel: isFinalAssessment ? "Qualifications & Tooling Check" : "Next Screening Module",
-      progressPercent: isFinalAssessment ? 83 : 67,
-    });
-  }
-
   return {
-    success: true,
-    score: computedScore,
-    message: `Assessment completed and passed with score ${computedScore}%!`,
+    session: { assessment: toPublicAssessment(def), startedAt, expiresAt, attempt },
   };
 }
 
-export async function submitTechnicalCheck(
-  checkType: string
-): Promise<OnboardingActionResult> {
+export async function submitAssessment(
+  stepId: string,
+  input: { answers: AssessmentAnswers; antiPlagiarismAgreed: boolean }
+): Promise<AssessmentActionResult> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  if (!user) {
-    return { error: "Authentication required." };
+  if (!user) return { error: "Authentication required." };
+  if (!isAssessmentStepId(stepId)) return { error: "Unknown assessment." };
+  if (!input?.antiPlagiarismAgreed) {
+    return { error: "Please confirm that your answers are your own work." };
   }
 
-  try {
-    await supabase.from("fellow_onboarding_progress").upsert({
-      user_id: user.id,
-      step_id: checkType === "tech_suite" ? "step_5_tech" : "step_6_next",
-      status: "completed",
-      score: 100,
-      submitted_payload: {
-        clientUserAgent: "Verified Web Browser Client",
-        certifiedAt: new Date().toISOString(),
-      },
-      updated_at: new Date().toISOString(),
-    });
-  } catch {
-    // Non-fatal
+  const adminClient = createAdminClient();
+  const { progress } = await loadOnboardingState(adminClient, user.id);
+  const row = progress.find((p) => p.step_id === stepId);
+  const attempt = readAttempt(row);
+
+  if (row?.status === "completed" || row?.status === "passed") {
+    return { error: "You have already passed this assessment." };
+  }
+  if (row?.status !== "in_progress" || !attempt.startedAt || !attempt.expiresAt) {
+    return { error: "This attempt is no longer active. Please start the assessment again." };
+  }
+
+  const def = getAssessment(stepId);
+  const now = new Date();
+
+  if (now.getTime() > new Date(attempt.expiresAt).getTime() + ASSESSMENT_GRACE_SECONDS * 1000) {
+    const retryAt = await expireAttempt(adminClient, user.id, stepId, attempt);
+    revalidatePath("/dashboard");
+    return {
+      error: `Time ran out before this attempt was submitted. You can retry in ${formatWait(
+        new Date(retryAt),
+        now
+      )}.`,
+    };
+  }
+
+  // Keep only answers to real questions, capped in size.
+  const knownIds = new Set(def.tasks.flatMap((t) => t.questions.map((q) => q.id)));
+  const answers: AssessmentAnswers = {};
+  for (const [key, value] of Object.entries(input.answers || {})) {
+    if (knownIds.has(key) && typeof value === "string") answers[key] = value.slice(0, 5000);
+  }
+
+  const graded = gradeAssessment(def, answers);
+  const retryAvailableAt = graded.passed
+    ? null
+    : new Date(now.getTime() + ASSESSMENT_RETRY_COOLDOWN_HOURS * 3600 * 1000).toISOString();
+  const submittedAt = now.toISOString();
+  const timeSpentSeconds = Math.round(
+    (now.getTime() - new Date(attempt.startedAt).getTime()) / 1000
+  );
+
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: stepId,
+    status: graded.passed ? "completed" : "failed",
+    score: graded.score,
+    submitted_payload: {
+      attempt: attempt.attempt || 1,
+      startedAt: attempt.startedAt,
+      expiresAt: attempt.expiresAt,
+      submittedAt,
+      timeSpentSeconds,
+      answers,
+      breakdown: graded.questions,
+      antiPlagiarismAgreed: true,
+      retryAvailableAt,
+      history: [
+        ...(attempt.history || []),
+        { attempt: attempt.attempt || 1, score: graded.score, passed: graded.passed, at: submittedAt },
+      ],
+    },
+  });
+  if (saveError) {
+    return {
+      error: "Your answers were graded but we couldn't save the result. Please submit again.",
+    };
   }
 
   revalidatePath("/dashboard");
-  if (user.email) {
-    const isFinalStep = checkType !== "tech_suite";
-    await notifyOnboardingProgress({
+
+  if (graded.passed) {
+    await notifyStepCompleted(user, stepId, `${getStepDefinition(stepId)?.label} — ${graded.score}%`);
+  } else if (user.email) {
+    await notifyAssessmentFailed({
       userId: user.id,
       email: user.email,
       name: user.user_metadata?.full_name || "Contributor",
-      stepKey: isFinalStep ? "step_6_next" : "step_5_tech",
-      completedStepLabel: isFinalStep ? "Onboarding Next Steps" : "Qualifications & Tooling Check",
-      nextStepLabel: isFinalStep ? null : "Onboarding Next Steps (6m)",
-      progressPercent: isFinalStep ? 100 : 92,
+      stepId,
+      score: graded.score,
+      threshold: def.passingScore,
     });
   }
+
+  return {
+    result: {
+      score: graded.score,
+      passed: graded.passed,
+      passingScore: def.passingScore,
+      choiceCorrect: graded.choiceCorrect,
+      choiceTotal: graded.choiceTotal,
+      writtenEarned: graded.writtenEarned,
+      writtenMax: graded.writtenMax,
+      questions: graded.questions,
+      retryAvailableAt,
+    },
+    message: graded.passed
+      ? `Passed with ${graded.score}%. The next step is now unlocked.`
+      : `You scored ${graded.score}% — ${def.passingScore}% is needed to pass.`,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Final checks                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** Missing qualification items for the Qualifications check, in display order. */
+function missingQualifications(profile: (Profile & Record<string, unknown>) | null): string[] {
+  const missing: string[] = [];
+  if (!profile?.resume_path) missing.push("Upload your resume");
+  if (!profile?.expertise) missing.push("Choose your primary expertise");
+  if ((profile?.skills?.length ?? 0) < 3) missing.push("Add at least 3 skills");
+  return missing;
+}
+
+export async function submitQualificationsCheck(): Promise<OnboardingActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Authentication required." };
+
+  const adminClient = createAdminClient();
+  const { profile, steps } = await loadOnboardingState(adminClient, user.id);
+  const gateError = lockedStepError(steps, "step_5_tech");
+  if (gateError) return { error: gateError };
+
+  const missing = missingQualifications(profile);
+  if (missing.length > 0) {
+    return { error: `Before this check can pass: ${missing.join(", ")}.` };
+  }
+
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: "step_5_tech",
+    status: "completed",
+    score: 100,
+    submitted_payload: {
+      resumeFilename: profile?.resume_filename || null,
+      expertise: profile?.expertise || null,
+      skillsCount: profile?.skills?.length ?? 0,
+      verifiedAt: new Date().toISOString(),
+    },
+  });
+  if (saveError) return { error: "Could not save this step. Please try again." };
+
+  revalidatePath("/dashboard");
+  await notifyStepCompleted(user, "step_5_tech");
+  return { success: true, message: "Qualifications confirmed." };
+}
+
+const toolingSchema = z.object({
+  googleEmail: z.string().trim().email("Enter a valid Google account email address.").max(200),
+  slackConfirmed: z.literal(true, { message: "Please confirm you can use Slack for project communication." }),
+});
+
+export async function submitToolingCheck(input: {
+  googleEmail: string;
+  slackConfirmed: boolean;
+}): Promise<OnboardingActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Authentication required." };
+
+  const parsed = toolingSchema.safeParse(input);
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message || "Invalid details." };
+
+  const adminClient = createAdminClient();
+  const { steps } = await loadOnboardingState(adminClient, user.id);
+  const gateError = lockedStepError(steps, "step_5_gsuite");
+  if (gateError) return { error: gateError };
+
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: "step_5_gsuite",
+    status: "completed",
+    score: 100,
+    submitted_payload: {
+      googleEmail: parsed.data.googleEmail.toLowerCase(),
+      slackConfirmed: true,
+      confirmedAt: new Date().toISOString(),
+    },
+  });
+  if (saveError) return { error: "Could not save this step. Please try again." };
+
+  revalidatePath("/dashboard");
+  await notifyStepCompleted(user, "step_5_gsuite");
+  return { success: true, message: "Google account saved. Project invites will be sent there." };
+}
+
+export async function completeOnboarding(): Promise<OnboardingActionResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Authentication required." };
+
+  const adminClient = createAdminClient();
+  const { steps } = await loadOnboardingState(adminClient, user.id);
+  const gateError = lockedStepError(steps, "step_6_next");
+  if (gateError) return { error: gateError };
+
+  const saveError = await saveProgress(adminClient, {
+    user_id: user.id,
+    step_id: "step_6_next",
+    status: "completed",
+    score: 100,
+    submitted_payload: { completedAt: new Date().toISOString() },
+  });
+  if (saveError) return { error: "Could not save this step. Please try again." };
+
+  revalidatePath("/dashboard");
+  await notifyStepCompleted(user, "step_6_next");
   return {
     success: true,
-    message:
-      checkType === "tech_suite"
-        ? "Qualifications and tooling environment verified."
-        : "Onboarding complete! Your full tasking feed is now activated.",
+    message: "Onboarding complete! Your full tasking feed is now activated.",
   };
 }
 
@@ -645,7 +930,7 @@ export async function initiateDiditKyc(
         initiatedAt: new Date().toISOString(),
       },
       updated_at: new Date().toISOString(),
-    });
+    }, { onConflict: "user_id,step_id" });
   } catch {
     // Non-fatal
   }
@@ -796,7 +1081,7 @@ export async function simulateSandboxKycVerification(
         verifiedAt: nowIso,
       },
       updated_at: nowIso,
-    });
+    }, { onConflict: "user_id,step_id" });
   } catch {
     // Non-fatal
   }

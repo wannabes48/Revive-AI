@@ -1,16 +1,19 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { OnboardingStepState } from "@/lib/projects-data";
+import type { OnboardingStepState } from "@/lib/onboarding-steps";
 import {
   submitKycVerification,
   submitTaxSetup,
   submitProjectTerms,
-  submitAssessmentTask,
-  submitTechnicalCheck,
-  simulateSandboxKycVerification,
+  submitQualificationsCheck,
+  submitToolingCheck,
+  completeOnboarding,
+  type OnboardingActionResult,
 } from "@/actions/onboarding";
+import { AssessmentRunner } from "@/components/dashboard/assessment-runner";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,21 +25,12 @@ import {
   CheckCircle2,
   Clock,
   ArrowRight,
-  Sparkles,
-  FileText,
-  DollarSign,
-  Laptop,
   Check,
   ChevronRight,
   AlertCircle,
-  HelpCircle,
-  Timer,
   Award,
-  Zap,
   Loader2,
   ExternalLink,
-  Shield,
-  Fingerprint,
 } from "lucide-react";
 
 interface OnboardingChecklistCardProps {
@@ -45,19 +39,25 @@ interface OnboardingChecklistCardProps {
     steps: OnboardingStepState[];
     completedCount: number;
     isFullyUnlocked: boolean;
+    qualifications: {
+      resumeFilename: string | null;
+      expertise: string | null;
+      skillsCount: number;
+    };
   };
 }
 
 export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { bannerHeadline, steps, completedCount, isFullyUnlocked } = onboarding;
+  const { bannerHeadline, steps, completedCount, isFullyUnlocked, qualifications } = onboarding;
 
   // Active modal step
   const [activeModalStep, setActiveModalStep] = React.useState<OnboardingStepState | null>(null);
 
   // Form states
   const [loading, setLoading] = React.useState(false);
+  const [renderedAt] = React.useState(() => Date.now());
   const [diditLoading, setDiditLoading] = React.useState(false);
 
   // Handle callback when returning from Didit.me
@@ -82,49 +82,31 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
   // Terms state
   const [termsAgreed, setTermsAgreed] = React.useState(false);
 
-  // Assessment task state
-  const [assessmentModelChoice, setAssessmentModelChoice] = React.useState<"modelA" | "modelB" | "equal">("modelA");
-  const [assessmentJustification, setAssessmentJustification] = React.useState("");
-  const [assessmentFactuality, setAssessmentFactuality] = React.useState(5);
-  const [assessmentInstruction, setAssessmentInstruction] = React.useState(5);
-  const [antiPlagiarism, setAntiPlagiarism] = React.useState(false);
-  const [timerSecondsRemaining, setTimerSecondsRemaining] = React.useState(600); // 10m default
-  const [autoSaveStatus, setAutoSaveStatus] = React.useState<"saved" | "saving">("saved");
+  // Final-step state
+  const [googleEmail, setGoogleEmail] = React.useState("");
+  const [slackConfirmed, setSlackConfirmed] = React.useState(false);
 
-  // Timer countdown hook for open assessment
-  React.useEffect(() => {
-    if (activeModalStep?.type === "timed_assessment") {
-      const initialSeconds = (activeModalStep.estimatedMinutes || 10) * 60;
-      setTimerSecondsRemaining(initialSeconds);
-      const interval = setInterval(() => {
-        setTimerSecondsRemaining((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearInterval(interval);
-    }
-  }, [activeModalStep]);
-
-  // Auto-save debounce effect
-  React.useEffect(() => {
-    if (assessmentJustification) {
-      setAutoSaveStatus("saving");
-      const t = setTimeout(() => {
-        setAutoSaveStatus("saved");
-      }, 800);
-      return () => clearTimeout(t);
-    }
-  }, [assessmentJustification, assessmentModelChoice, assessmentFactuality]);
-
-  const formatTimer = (totalSeconds: number) => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
-  };
+  const qualificationItems = [
+    {
+      label: "Resume uploaded",
+      ok: Boolean(qualifications.resumeFilename),
+      detail: qualifications.resumeFilename || "PDF or Word document, up to 4 MB",
+      href: "/profile?tab=expertise#resume",
+    },
+    {
+      label: "Primary expertise selected",
+      ok: Boolean(qualifications.expertise),
+      detail: qualifications.expertise || "Choose the field you know best",
+      href: "/profile?tab=expertise#expertise",
+    },
+    {
+      label: "At least 3 domain skills",
+      ok: qualifications.skillsCount >= 3,
+      detail: `${qualifications.skillsCount} added`,
+      href: "/profile?tab=expertise#skills",
+    },
+  ];
+  const qualificationsMet = qualificationItems.every((i) => i.ok);
 
   // Launch Didit.me Verification
   const handleLaunchDidit = async () => {
@@ -222,37 +204,21 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
     }
   };
 
-  const handleAssessmentSubmit = async () => {
-    if (!activeModalStep) return;
+  const runStepAction = async (action: () => Promise<OnboardingActionResult>) => {
     setLoading(true);
-    const res = await submitAssessmentTask(activeModalStep.id, {
-      preference: assessmentModelChoice,
-      justification: assessmentJustification,
-      factualityScore: assessmentFactuality,
-      instructionScore: assessmentInstruction,
-      antiPlagiarismAgreed: antiPlagiarism,
-      timeSpentSeconds: (activeModalStep.estimatedMinutes * 60) - timerSecondsRemaining,
-    });
-    setLoading(false);
-    if (res.error) {
-      toast.error(res.error);
-    } else {
-      toast.success(res.message || "Assessment passed!");
-      setActiveModalStep(null);
-      router.refresh();
-    }
-  };
-
-  const handleTechCheckSubmit = async (type: string) => {
-    setLoading(true);
-    const res = await submitTechnicalCheck(type);
-    setLoading(false);
-    if (res.error) {
-      toast.error(res.error);
-    } else {
-      toast.success(res.message || "Check verified.");
-      setActiveModalStep(null);
-      router.refresh();
+    try {
+      const res = await action();
+      if (res.error) {
+        toast.error(res.error);
+      } else {
+        toast.success(res.message || "Step completed.");
+        setActiveModalStep(null);
+        router.refresh();
+      }
+    } catch {
+      toast.error("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -362,6 +328,8 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
           const isCompleted = step.status === "completed";
           const isInReview = step.status === "in_review";
           const isFailed = step.status === "failed";
+          const retryLocked =
+            isFailed && Boolean(step.retryAvailableAt) && new Date(step.retryAvailableAt!).getTime() > renderedAt;
 
           return (
             <div
@@ -416,6 +384,16 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                       ? "Your identity verification is in manual review."
                       : step.subtext}
                   </p>
+                  {retryLocked && (
+                    <p className="text-[11px] font-semibold text-destructive mt-1">
+                      Retry opens {new Date(step.retryAvailableAt!).toLocaleString()}
+                    </p>
+                  )}
+                  {step.attemptExpiresAt && !isCompleted && (
+                    <p className="text-[11px] font-semibold text-amber-700 mt-1">
+                      Attempt in progress — ends {new Date(step.attemptExpiresAt).toLocaleTimeString()}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -460,7 +438,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
                           setActiveModalStep(step);
                         }
                       }}
-                      disabled={step.type === "identity_kyc" && diditLoading}
+                      disabled={(step.type === "identity_kyc" && diditLoading) || retryLocked}
                       className="rounded-full text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5 cursor-pointer shadow-xs"
                     >
                       {step.type === "identity_kyc" && diditLoading ? (
@@ -755,213 +733,51 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
         </div>
       </ResponsiveDialog>
 
-      {/* MODAL 4: Timed Assessment Interface */}
+      {/* MODAL 4: Timed Assessment */}
+      <AssessmentRunner
+        stepId={activeModalStep?.type === "timed_assessment" ? activeModalStep.id : null}
+        stepTitle={activeModalStep?.title || "Assessment"}
+        onClose={() => {
+          setActiveModalStep(null);
+          router.refresh();
+        }}
+      />
+
+      {/* MODAL 5: Qualifications check */}
       <ResponsiveDialog
-        open={Boolean(activeModalStep?.type === "timed_assessment")}
+        open={Boolean(activeModalStep?.type === "qualifications_check")}
         onOpenChange={(open) => !open && setActiveModalStep(null)}
-        title={
-          <div className="flex items-center justify-between w-full pr-6">
-            <span>{activeModalStep?.title}</span>
-            <div className="flex items-center gap-1.5 text-xs font-mono font-bold bg-amber-500/15 text-amber-800 border border-amber-500/30 px-3 py-1 rounded-full">
-              <Timer className="h-3.5 w-3.5 text-amber-600 animate-pulse" />
-              <span>{formatTimer(timerSecondsRemaining)}</span>
-            </div>
-          </div>
-        }
-        description="Side-by-side prompt evaluation and benchmark scoring rubric."
-      >
-        <div className="space-y-4 pt-2">
-          {/* Rubric guidelines */}
-          <div className="p-3.5 rounded-xl border border-border bg-muted/20 text-xs space-y-1">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-foreground">Evaluation Guidelines & Rubric</span>
-              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${autoSaveStatus === "saved" ? "bg-emerald-500" : "bg-amber-500 animate-pulse"}`} />
-                {autoSaveStatus === "saved" ? "Auto-saved" : "Saving draft..."}
-              </span>
-            </div>
-            <p className="text-muted-foreground text-[11px] leading-relaxed">
-              {activeModalStep?.assessmentPayload?.guidelines ||
-                "Compare both model generations for factual correctness, strict adherence to technical formulas, and avoidance of hallucinated assumptions."}
-            </p>
-          </div>
-
-          {/* Model Comparison Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {/* Model A */}
-            <div
-              onClick={() => setAssessmentModelChoice("modelA")}
-              className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-all ${
-                assessmentModelChoice === "modelA"
-                  ? "border-[#0F766E] bg-[#CCFBF1]/20 ring-2 ring-[#0F766E]/20"
-                  : "border-border bg-card hover:border-border/80"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-bold text-foreground flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-primary" />
-                  Model Alpha Completion
-                </span>
-                {assessmentModelChoice === "modelA" && (
-                  <span className="text-[10px] font-bold text-[#0F766E] uppercase">Selected</span>
-                )}
-              </div>
-              <pre className="text-[11px] font-mono whitespace-pre-wrap text-foreground/90 bg-muted/40 p-2.5 rounded-lg border border-border/50 max-h-40 overflow-y-auto">
-                {activeModalStep?.assessmentPayload?.modelA?.response || "Evaluating mathematical solution..."}
-              </pre>
-            </div>
-
-            {/* Model B */}
-            <div
-              onClick={() => setAssessmentModelChoice("modelB")}
-              className={`p-3.5 rounded-xl border text-xs cursor-pointer transition-all ${
-                assessmentModelChoice === "modelB"
-                  ? "border-[#0F766E] bg-[#CCFBF1]/20 ring-2 ring-[#0F766E]/20"
-                  : "border-border bg-card hover:border-border/80"
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-bold text-foreground flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                  Model Beta Completion
-                </span>
-                {assessmentModelChoice === "modelB" && (
-                  <span className="text-[10px] font-bold text-[#0F766E] uppercase">Selected</span>
-                )}
-              </div>
-              <pre className="text-[11px] font-mono whitespace-pre-wrap text-foreground/90 bg-muted/40 p-2.5 rounded-lg border border-border/50 max-h-40 overflow-y-auto">
-                {activeModalStep?.assessmentPayload?.modelB?.response || "Evaluating alternative prompt output..."}
-              </pre>
-            </div>
-          </div>
-
-          {/* Criteria Ratings */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-[11px] font-semibold">Factuality Score (1–5)</Label>
-              <select
-                value={assessmentFactuality}
-                onChange={(e) => setAssessmentFactuality(Number(e.target.value))}
-                className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-background"
-              >
-                <option value={5}>5 - Completely Factually Accurate</option>
-                <option value={4}>4 - Minor non-critical inaccuracy</option>
-                <option value={3}>3 - Partially flawed logic</option>
-                <option value={2}>2 - Severe hallucination</option>
-                <option value={1}>1 - Completely fabricated</option>
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <Label className="text-[11px] font-semibold">Instruction Following (1–5)</Label>
-              <select
-                value={assessmentInstruction}
-                onChange={(e) => setAssessmentInstruction(Number(e.target.value))}
-                className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-background"
-              >
-                <option value={5}>5 - Followed all constraints strictly</option>
-                <option value={4}>4 - Missed minor formatting instruction</option>
-                <option value={3}>3 - Skipped explicit constraint</option>
-                <option value={2}>2 - Ignored negative constraints</option>
-                <option value={1}>1 - Completely off-topic</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Justification Feedback */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <Label className="text-[11px] font-semibold">
-                Expert Justification Feedback (min 25 characters)
-              </Label>
-              <span className="text-[10px] text-muted-foreground font-mono">
-                {assessmentJustification.length} chars
-              </span>
-            </div>
-            <textarea
-              value={assessmentJustification}
-              onChange={(e) => setAssessmentJustification(e.target.value)}
-              placeholder="Explain why the chosen model generation is superior based on accuracy, reasoning steps, and constraints..."
-              rows={3}
-              className="w-full p-2.5 text-xs rounded-xl border border-border bg-background placeholder:text-muted-foreground resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-
-          {/* Anti-plagiarism affirmation */}
-          <label className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-muted/20 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={antiPlagiarism}
-              onChange={(e) => setAntiPlagiarism(e.target.checked)}
-              className="mt-0.5 rounded border-border"
-            />
-            <span className="text-[11px] text-muted-foreground">
-              Anti-Plagiarism Certification: I confirm that these evaluations and justifications reflect my own independent intellectual assessment.
-            </span>
-          </label>
-
-          {/* Actions */}
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setActiveModalStep(null)}
-              className="rounded-full text-xs"
-            >
-              Close
-            </Button>
-            <Button
-              type="button"
-              disabled={loading || !antiPlagiarism || assessmentJustification.trim().length < 25}
-              onClick={handleAssessmentSubmit}
-              className="rounded-full text-xs font-bold px-5 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
-            >
-              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              Submit Benchmark Evaluation
-            </Button>
-          </div>
-        </div>
-      </ResponsiveDialog>
-
-      {/* MODAL 5: Technical Checks */}
-      <ResponsiveDialog
-        open={Boolean(activeModalStep?.type === "technical_check")}
-        onOpenChange={(open) => !open && setActiveModalStep(null)}
-        title="Technical Checks & Tooling Access"
-        description="Verify your browser environment, latency, and Google Suite / Slack integration access."
+        title="Qualifications Check"
+        description="We match you to projects using your resume, expertise and skills."
       >
         <div className="space-y-4 pt-2 text-xs">
           <div className="space-y-2">
-            <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/20">
-              <div className="flex items-center gap-2.5">
-                <Laptop className="h-4 w-4 text-[#0F766E]" />
-                <span className="font-semibold text-foreground">Browser Compatibility & Resolution</span>
+            {qualificationItems.map((item) => (
+              <div
+                key={item.label}
+                className="flex items-center justify-between gap-3 p-3 rounded-xl border border-border bg-muted/20"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {item.ok ? (
+                    <CheckCircle2 className="h-4 w-4 text-[#0F766E] shrink-0" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <span className="font-semibold text-foreground block">{item.label}</span>
+                    <span className="text-[11px] text-muted-foreground block truncate">{item.detail}</span>
+                  </div>
+                </div>
+                {!item.ok && (
+                  <Link
+                    href={item.href}
+                    className="text-[11px] font-bold text-[#0F766E] hover:underline shrink-0"
+                  >
+                    Add now
+                  </Link>
+                )}
               </div>
-              <span className="text-emerald-700 font-bold flex items-center gap-1">
-                <Check className="h-3.5 w-3.5" /> Passed
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/20">
-              <div className="flex items-center gap-2.5">
-                <Zap className="h-4 w-4 text-[#0F766E]" />
-                <span className="font-semibold text-foreground">Benchmark API Latency (&lt; 250ms)</span>
-              </div>
-              <span className="text-emerald-700 font-bold flex items-center gap-1">
-                <Check className="h-3.5 w-3.5" /> Optimal
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between p-3 rounded-xl border border-border bg-muted/20">
-              <div className="flex items-center gap-2.5">
-                <ShieldCheck className="h-4 w-4 text-[#0F766E]" />
-                <span className="font-semibold text-foreground">Google Suite / Slack Tooling Access</span>
-              </div>
-              <span className="text-emerald-700 font-bold flex items-center gap-1">
-                <Check className="h-3.5 w-3.5" /> Connected
-              </span>
-            </div>
+            ))}
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">
@@ -976,23 +792,90 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
             </Button>
             <Button
               type="button"
-              disabled={loading}
-              onClick={() => handleTechCheckSubmit("tech_suite")}
+              disabled={loading || !qualificationsMet}
+              onClick={() => runStepAction(submitQualificationsCheck)}
               className="rounded-full text-xs font-bold px-5 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
             >
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              Confirm Tooling Environment
+              Confirm qualifications
             </Button>
           </div>
         </div>
       </ResponsiveDialog>
 
-      {/* MODAL 6: Onboarding Next Steps */}
+      {/* MODAL 6: Google suite / Slack access */}
+      <ResponsiveDialog
+        open={Boolean(activeModalStep?.type === "tooling_check")}
+        onOpenChange={(open) => !open && setActiveModalStep(null)}
+        title="Google Suite Access Check"
+        description="Project documents are shared through Google Workspace and teams talk on Slack."
+      >
+        <form
+          className="space-y-4 pt-2 text-xs"
+          onSubmit={(e) => {
+            e.preventDefault();
+            runStepAction(() => submitToolingCheck({ googleEmail, slackConfirmed }));
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="googleEmail" className="text-xs font-semibold">
+              Google account email
+            </Label>
+            <Input
+              id="googleEmail"
+              type="email"
+              value={googleEmail}
+              onChange={(e) => setGoogleEmail(e.target.value)}
+              placeholder="you@gmail.com or your Google Workspace email"
+              required
+              className="h-10 text-xs rounded-xl"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Project guidelines, rubrics and Slack invites will be sent to this address.
+            </p>
+          </div>
+
+          <label className="flex items-start gap-2.5 p-3 rounded-xl border border-border bg-muted/20 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={slackConfirmed}
+              onChange={(e) => setSlackConfirmed(e.target.checked)}
+              className="mt-0.5 rounded border-border"
+            />
+            <span className="text-[11px] text-muted-foreground leading-relaxed">
+              I can open Google Docs, Sheets and Drive with this account and I will join the project Slack
+              workspace when invited.
+            </span>
+          </label>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setActiveModalStep(null)}
+              className="rounded-full text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={loading || !slackConfirmed || !googleEmail.trim()}
+              className="rounded-full text-xs font-bold px-5 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
+            >
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+              Save and continue
+            </Button>
+          </div>
+        </form>
+      </ResponsiveDialog>
+
+      {/* MODAL 7: Onboarding Next Steps */}
       <ResponsiveDialog
         open={Boolean(activeModalStep?.type === "next_steps")}
         onOpenChange={(open) => !open && setActiveModalStep(null)}
-        title="Activate Full Contributor Production Feed"
-        description="Final confirmation to unlock your dedicated project queues and live earning rate tiers."
+        title="Activate Your Production Feed"
+        description="Final confirmation to unlock your project queues and live earning rates."
       >
         <div className="space-y-4 pt-2 text-xs">
           <div className="p-4 rounded-xl border border-[#0F766E]/30 bg-[#CCFBF1]/20 space-y-2 text-center">
@@ -1000,10 +883,11 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
               <Award className="h-5 w-5" />
             </div>
             <h4 className="font-heading font-extrabold text-base text-foreground">
-              You Have Met the Contributor Benchmark Standard!
+              You&apos;ve passed every onboarding requirement
             </h4>
             <p className="text-xs text-muted-foreground max-w-md mx-auto">
-              Your domain credentials, identity, and RLHF evaluations have been recorded. You are ready to claim live client evaluation batches.
+              Your identity, tax details, assessments and qualifications are on file. Activate your feed to
+              start claiming live evaluation tasks.
             </p>
           </div>
 
@@ -1020,7 +904,7 @@ export function OnboardingChecklistCard({ onboarding }: OnboardingChecklistCardP
             <Button
               type="button"
               disabled={loading}
-              onClick={() => handleTechCheckSubmit("next_steps")}
+              onClick={() => runStepAction(completeOnboarding)}
               className="rounded-full text-xs font-bold px-6 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5"
             >
               {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}

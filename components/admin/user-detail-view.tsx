@@ -426,6 +426,25 @@ export function UserDetailView({
                     </a>
                   </div>
                 )}
+
+                <div className="pt-2 border-t border-border/60">
+                  <span className="text-[10px] font-semibold uppercase text-muted-foreground block">
+                    Resume
+                  </span>
+                  {user.resume_path ? (
+                    <a
+                      href={`/api/profile/resume?userId=${user.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline font-semibold inline-flex items-center gap-1 mt-1 truncate max-w-full"
+                    >
+                      <span className="truncate">{user.resume_filename || "Download resume"}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <span className="font-semibold text-muted-foreground mt-0.5 block">Not uploaded</span>
+                  )}
+                </div>
               </div>
             </div>
 

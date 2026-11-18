@@ -153,7 +153,7 @@ export async function POST(req: NextRequest) {
           initiatedAt: new Date().toISOString(),
         },
         updated_at: new Date().toISOString(),
-      });
+      }, { onConflict: "user_id,step_id" });
     } catch {
       // Non-fatal
     }

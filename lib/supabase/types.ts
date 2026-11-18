@@ -71,6 +71,9 @@ export interface Profile {
   avatar_url?: string | null;
   payouts_blocked?: boolean;
   terms_accepted_at?: string | null;
+  resume_path?: string | null;
+  resume_filename?: string | null;
+  resume_uploaded_at?: string | null;
   created_at: string;
 }
 

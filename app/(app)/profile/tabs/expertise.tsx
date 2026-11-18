@@ -6,6 +6,7 @@ import { Profile } from "@/types";
 import { saveExpertise } from "@/actions/profile";
 import { CATEGORIES, COMMON_LANGUAGES, SKILLS_BY_CATEGORY } from "@/lib/constants";
 import { TagInput } from "@/components/app/tag-input";
+import { ResumeUploader } from "@/components/app/resume-uploader";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -22,6 +23,10 @@ export function ExpertiseTab({ profile }: ExpertiseTabProps) {
 
   const [expertise, setExpertise] = React.useState<string>(profile.expertise || "");
   const [skills, setSkills] = React.useState<string[]>(profile.skills || []);
+  const [resume, setResume] = React.useState<{ filename: string | null; uploadedAt: string | null }>({
+    filename: profile.resume_path ? profile.resume_filename || "resume" : null,
+    uploadedAt: profile.resume_uploaded_at || null,
+  });
   const [languages, setLanguages] = React.useState<string[]>(
     profile.languages && profile.languages.length > 0 ? profile.languages : ["English"]
   );
@@ -35,6 +40,13 @@ export function ExpertiseTab({ profile }: ExpertiseTabProps) {
     e.preventDefault();
     if (!expertise) {
       toast.error("Please choose a primary expertise category.");
+      return;
+    }
+    if (!resume.filename) {
+      toast.error("Please upload your resume.", {
+        description: "A resume is required before you can save your expertise.",
+      });
+      document.getElementById("resume")?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
 
@@ -130,6 +142,26 @@ export function ExpertiseTab({ profile }: ExpertiseTabProps) {
             suggestions={currentCategorySuggestions}
             maxTags={20}
             placeholder="Type skill and press Enter or comma..."
+          />
+        </div>
+
+        {/* Resume (#resume anchor) */}
+        <div id="resume" className="space-y-2 pt-3 border-t border-border/60 scroll-mt-24">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs font-semibold">
+              Resume / CV <span className="text-destructive">*</span>
+            </Label>
+            <span className={`text-[11px] font-semibold ${resume.filename ? "text-primary" : "text-amber-600"}`}>
+              {resume.filename ? "✓ On file" : "Required"}
+            </span>
+          </div>
+          <ResumeUploader
+            filename={resume.filename}
+            uploadedAt={resume.uploadedAt}
+            onUploaded={(info) => {
+              setResume(info);
+              router.refresh();
+            }}
           />
         </div>
 
