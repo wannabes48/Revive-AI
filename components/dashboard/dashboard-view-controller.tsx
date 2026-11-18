@@ -17,14 +17,15 @@ import { NotificationItem } from "@/components/app/notification-item";
 import { EmptyState } from "@/components/app/empty-state";
 import { Button } from "@/components/ui/button";
 import {
+  ReferralDashboardCard,
+  type ReferralCardData,
+} from "@/components/referrals/referral-dashboard-card";
+import {
   Sparkles,
   ArrowRight,
   Award,
   Bell,
   Briefcase,
-  Users,
-  Copy,
-  Check,
   TrendingUp,
 } from "lucide-react";
 
@@ -36,6 +37,7 @@ interface DashboardViewControllerProps {
   profile: any;
   dashboardData: any;
   contributorData: ContributorDashboardData;
+  referral?: ReferralCardData | null;
 }
 
 export function DashboardViewController({
@@ -43,6 +45,7 @@ export function DashboardViewController({
   profile,
   dashboardData,
   contributorData,
+  referral = null,
 }: DashboardViewControllerProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -62,27 +65,6 @@ export function DashboardViewController({
 
   const { counts, recommended, approved, recent, notifications } = dashboardData;
   const { onboarding, projects, analytics } = contributorData;
-
-  const [referralCopied, setReferralCopied] = React.useState(false);
-  const [referralUrl, setReferralUrl] = React.useState(
-    `https://reviveai.com/signup?ref=${analytics.referralCode}`
-  );
-
-  React.useEffect(() => {
-    if (typeof window !== "undefined") {
-      setReferralUrl(`${window.location.origin}/signup?ref=${analytics.referralCode}`);
-    }
-  }, [analytics.referralCode]);
-
-  const copyReferral = async () => {
-    try {
-      await navigator.clipboard.writeText(referralUrl);
-      setReferralCopied(true);
-      setTimeout(() => setReferralCopied(false), 2000);
-    } catch {
-      // Non-fatal
-    }
-  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -223,6 +205,7 @@ export function DashboardViewController({
             <div className="space-y-6">
               <DashboardSidebarWidgets
                 analytics={analytics}
+                referral={referral}
                 onNavigateToPayments={() => handleTabChange("payments")}
               />
             </div>
@@ -244,6 +227,7 @@ export function DashboardViewController({
           <div className="space-y-6">
             <DashboardSidebarWidgets
               analytics={analytics}
+              referral={referral}
               onNavigateToPayments={() => handleTabChange("payments")}
             />
           </div>
@@ -257,49 +241,14 @@ export function DashboardViewController({
 
       {/* TAB 4: REFERRALS */}
       {activeTab === "referrals" && (
-        <div className="space-y-8">
-          <div className="bg-gradient-to-r from-card via-[#F8FAF3] to-[#CCFBF1]/30 border border-[#0F766E]/30 rounded-2xl p-6 shadow-2xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#0F766E] block">
-                  Colleague Referral Program
-                </span>
-                <h3 className="font-heading text-2xl font-black text-foreground mt-0.5">
-                  Earn Up to $700 per Verified Specialist
-                </h3>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-1 max-w-xl">
-                  Do you know mathematicians, software engineers, biomedical researchers, or legal experts? Introduce them to ReviveAI and earn a bonus once they pass their onboarding benchmark.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl bg-card border border-border text-center shrink-0">
-                <span className="text-[10px] font-bold uppercase text-muted-foreground block">
-                  Your Referral Rewards
-                </span>
-                <span className="text-2xl font-heading font-extrabold text-[#0F766E] block mt-0.5">
-                  ${analytics.referralEarningsDollars.toFixed(2)}
-                </span>
-                <span className="text-[10px] text-muted-foreground">1 Specialist Admitted</span>
-              </div>
-            </div>
-
-            <div className="p-2 bg-background rounded-xl border border-border flex items-center justify-between gap-3 max-w-xl">
-              <span
-                suppressHydrationWarning
-                className="text-xs font-mono text-muted-foreground px-2 truncate select-all"
-              >
-                {referralUrl}
-              </span>
-              <Button
-                size="sm"
-                onClick={copyReferral}
-                className="rounded-lg text-xs font-bold h-9 px-4 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white shrink-0 gap-1.5 cursor-pointer"
-              >
-                {referralCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                <span>{referralCopied ? "Copied" : "Copy Link"}</span>
-              </Button>
-            </div>
-          </div>
+        <div className="max-w-xl">
+          {referral ? (
+            <ReferralDashboardCard data={referral} />
+          ) : (
+            <Link href="/referrals" className="text-sm font-semibold text-[#0F766E] hover:underline">
+              Open the referral program
+            </Link>
+          )}
         </div>
       )}
     </div>

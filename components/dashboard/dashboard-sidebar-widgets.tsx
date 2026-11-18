@@ -2,16 +2,16 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { toast } from "@/components/ui/toast";
-import { Button } from "@/components/ui/button";
+import {
+  ReferralDashboardCard,
+  type ReferralCardData,
+} from "@/components/referrals/referral-dashboard-card";
 import {
   DollarSign,
   Clock,
   CheckCircle2,
   ShieldAlert,
   Users,
-  Copy,
-  Check,
   ArrowRight,
   TrendingUp,
   AlertTriangle,
@@ -28,38 +28,18 @@ interface DashboardSidebarWidgetsProps {
     hoursThisWeek: number;
     allTimeTasks?: number;
     allTimeHours?: number;
-    referralCode: string;
-    referralEarningsDollars: number;
+    referralCode?: string;
+    referralEarningsDollars?: number;
   };
+  referral?: ReferralCardData | null;
   onNavigateToPayments?: () => void;
 }
 
 export function DashboardSidebarWidgets({
   analytics,
+  referral = null,
   onNavigateToPayments,
 }: DashboardSidebarWidgetsProps) {
-  const [copied, setCopied] = React.useState(false);
-  const [referralUrl, setReferralUrl] = React.useState(
-    `https://reviveai.com/signup?ref=${analytics.referralCode}`
-  );
-
-  React.useEffect(() => {
-    if (typeof window !== "undefined") {
-      setReferralUrl(`${window.location.origin}/signup?ref=${analytics.referralCode}`);
-    }
-  }, [analytics.referralCode]);
-
-  const handleCopyReferral = async () => {
-    try {
-      await navigator.clipboard.writeText(referralUrl);
-      setCopied(true);
-      toast.success("Referral invite link copied to clipboard!");
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      toast.error("Could not copy link to clipboard.");
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* 1. Earnings Quick Glance Widget */}
@@ -173,43 +153,8 @@ export function DashboardSidebarWidgets({
         </Link>
       </div>
 
-      {/* 3. Referral Widget */}
-      <div className="bg-gradient-to-br from-card via-[#F8FAF3] to-[#CCFBF1]/20 rounded-2xl border border-[#0F766E]/30 p-5 shadow-2xs space-y-3.5">
-        <div className="flex items-center gap-2 text-[#0F766E]">
-          <Users className="h-4 w-4 shrink-0" />
-          <h4 className="font-heading text-sm font-bold text-foreground">
-            Refer & Earn up to $700
-          </h4>
-        </div>
-
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          Invite accredited disciplinary specialists. Earn up to $700 per verified colleague once they complete their onboarding evaluations.
-        </p>
-
-        {/* Copy Referral Link Pill */}
-        <div className="space-y-1.5 pt-1">
-          <div className="flex items-center gap-2 p-1.5 bg-background rounded-xl border border-border">
-            <span
-              suppressHydrationWarning
-              className="text-xs font-mono text-muted-foreground px-2 truncate flex-1 select-all"
-            >
-              {referralUrl}
-            </span>
-            <Button
-              size="sm"
-              onClick={handleCopyReferral}
-              className="rounded-lg text-xs font-bold h-8 px-3 bg-[#0F766E] hover:bg-[#0F766E]/90 text-white shrink-0 gap-1 cursor-pointer"
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              <span>{copied ? "Copied" : "Copy"}</span>
-            </Button>
-          </div>
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1">
-            <span>Code: <strong className="text-foreground">{analytics.referralCode}</strong></span>
-            <span>Earned: <strong className="text-[#0F766E]">${analytics.referralEarningsDollars.toFixed(2)}</strong></span>
-          </div>
-        </div>
-      </div>
+      {/* 3. Referral program (live settings) */}
+      {referral && <ReferralDashboardCard data={referral} />}
     </div>
   );
 }

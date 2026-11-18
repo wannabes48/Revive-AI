@@ -56,6 +56,12 @@ export async function GET(req: Request) {
   const adminClient = createAdminClient();
   const now = new Date();
 
+  // 0. Close referrals whose qualification window has passed (no-op before migration 010).
+  const { data: expiredReferrals, error: expireError } = await adminClient.rpc(
+    "expire_stale_referrals"
+  );
+  if (expireError) console.warn("Could not expire stale referrals:", expireError.message);
+
   // 1. Admitted contributors only — waitlisted/rejected users and admins get no nudges.
   const profiles: (Profile & { approved_at?: string | null; created_at: string })[] = [];
   for (let from = 0; ; from += PAGE_SIZE) {
@@ -284,5 +290,6 @@ export async function GET(req: Request) {
     contributorsScanned: profiles.length,
     candidates: counts,
     emailsDispatched: delivered,
+    referralsExpired: Number(expiredReferrals || 0),
   });
 }

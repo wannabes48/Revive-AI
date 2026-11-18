@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Briefcase,
   Wallet,
+  Gift,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -56,6 +57,12 @@ export function Sidebar({ role, profile }: SidebarProps) {
       href: "/tasks",
       icon: Compass,
       isActive: pathname.startsWith("/tasks"),
+    },
+    {
+      label: "Invite",
+      href: "/referrals",
+      icon: Gift,
+      isActive: pathname.startsWith("/referrals"),
     },
     {
       label: "Profile",

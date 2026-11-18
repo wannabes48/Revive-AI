@@ -18,6 +18,7 @@ import {
   LogOut,
   X,
   ExternalLink,
+  Gift,
 } from "lucide-react";
 
 interface BottomNavProps {
@@ -75,6 +76,7 @@ export function BottomNav({ role, unread = 0 }: BottomNavProps) {
     pathname.startsWith("/profile") ||
     pathname.startsWith("/notifications") ||
     pathname.startsWith("/tasks") ||
+    pathname.startsWith("/referrals") ||
     pathname.startsWith("/admin");
 
   return (
@@ -232,6 +234,19 @@ export function BottomNav({ role, unread = 0 }: BottomNavProps) {
                   <span>Browse Tasks</span>
                 </div>
                 <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+              </Link>
+
+              <Link
+                href="/referrals"
+                onClick={() => setMoreOpen(false)}
+                className="touch-target w-full flex items-center justify-between px-3.5 py-3 rounded-xl bg-muted/40 hover:bg-muted transition-colors text-sm font-semibold text-foreground"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
+                    <Gift className="h-4 w-4" />
+                  </div>
+                  <span>Invite</span>
+                </div>
               </Link>
 
               {role === "admin" && (

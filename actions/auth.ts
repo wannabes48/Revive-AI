@@ -2,7 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { getPublicSiteUrl } from "@/lib/site-url";
+import { REFERRAL_COOKIE, normalizeReferralCode } from "@/lib/referrals";
 import { createClient } from "@/lib/supabase/server";
 import {
   loginSchema,
@@ -26,6 +28,15 @@ export type ActionResponse = {
   redirectTo?: string;
 };
 
+/** True when the visitor arrived with a well-formed referral code (cookie or ?ref=). Never names the referrer. */
+export async function hasReferralInvite(refParam?: string | null): Promise<boolean> {
+  const cookieStore = await cookies();
+  return Boolean(
+    normalizeReferralCode(cookieStore.get(REFERRAL_COOKIE)?.value) ||
+      normalizeReferralCode(refParam)
+  );
+}
+
 export async function signUpAction(formData: FormData): Promise<ActionResponse> {
   const fullName = formData.get("fullName");
   const email = formData.get("email");
@@ -48,6 +59,14 @@ export async function signUpAction(formData: FormData): Promise<ActionResponse> 
   const origin = await getOrigin();
   const supabase = await createClient();
 
+  // Referral code: from the /r/<code> cookie, or ?ref=CODE carried by the signup form.
+  // Read by the handle_new_user trigger, which links the new account to its referrer.
+  const cookieStore = await cookies();
+  const formRef = formData.get("ref");
+  const ref =
+    normalizeReferralCode(cookieStore.get(REFERRAL_COOKIE)?.value) ||
+    normalizeReferralCode(typeof formRef === "string" ? formRef : null);
+
   const { data, error } = await supabase.auth.signUp({
     email: validEmail,
     password: validPassword,
@@ -57,6 +76,7 @@ export async function signUpAction(formData: FormData): Promise<ActionResponse> 
         expertise: validExpertise || undefined,
         approval_status: "waitlisted",
         kyc_status: "unverified",
+        ...(ref ? { ref } : {}),
       },
       emailRedirectTo: `${origin}/auth/callback?next=/waitlist`,
     },
@@ -65,6 +85,8 @@ export async function signUpAction(formData: FormData): Promise<ActionResponse> 
   if (error) {
     return { error: error.message };
   }
+
+  if (ref) cookieStore.delete(REFERRAL_COOKIE);
 
   if (data.user) {
     try {

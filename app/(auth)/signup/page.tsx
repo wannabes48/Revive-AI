@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { signUpAction } from "@/actions/auth";
+import { hasReferralInvite, signUpAction } from "@/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +29,17 @@ export default function SignupPage() {
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null);
   const [showPassword, setShowPassword] = React.useState(false);
   const [passwordValue, setPasswordValue] = React.useState("");
+
+  // Referral invite: ?ref=CODE (e.g. in-app browsers) or the cookie set by /r/<code>.
+  const [refParam, setRefParam] = React.useState<string | null>(null);
+  const [invited, setInvited] = React.useState(false);
+  React.useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("ref");
+    hasReferralInvite(param).then((ok) => {
+      setInvited(ok);
+      if (ok && param) setRefParam(param);
+    });
+  }, []);
 
   // Dynamic Password Strength Meter
   const strengthInfo = React.useMemo(() => {
@@ -130,6 +141,16 @@ export default function SignupPage() {
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
+            {refParam && <input type="hidden" name="ref" value={refParam} />}
+
+            {/* Referral invite banner — never names the referrer */}
+            {invited && (
+              <div className="flex items-center gap-2.5 p-3 rounded-lg bg-[#CCFBF1]/60 border border-[#99F6E4] text-[#0F766E] text-xs font-semibold">
+                <Sparkles className="h-4 w-4 shrink-0" />
+                <span>You were invited by a Revive member.</span>
+              </div>
+            )}
+
             {/* Error Banner */}
             {errorMessage && (
               <div className="flex items-start gap-2.5 p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs font-medium">
