@@ -126,7 +126,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
             {task.category}
           </span>
           <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-            {isHourly ? "Hourly Timesheet" : "Per Item"}
+            {isHourly ? "Hourly Timesheet" : "Per Task"}
           </span>
         </div>
       </div>
@@ -151,7 +151,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
               {effectiveRate > 0
                 ? isHourly
                   ? `${formatCents(effectiveRate)}/hr`
-                  : `${formatCents(effectiveRate)} / approved item`
+                  : `${formatCents(effectiveRate)} / approved task`
                 : formatPay(task.pay_min, task.pay_max, task.pay_unit)}
             </span>
           </div>
@@ -162,7 +162,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
           <div className="grid grid-cols-3 gap-3 pt-4 border-t border-border/60 text-xs">
             <div className="p-3 rounded-xl bg-muted/20 border border-border/50">
               <span className="text-[10px] uppercase font-semibold text-muted-foreground block">
-                Approved Items
+                Approved Tasks
               </span>
               <span className="font-heading font-bold text-xl text-foreground mt-0.5 block">
                 {completedCount}
@@ -199,7 +199,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
                 Ready to Evaluate?
               </h3>
               <p className="text-xs text-muted-foreground">
-                Claim the next available work item from the queue. You will have {task.claim_minutes || 60} minutes to complete and submit.
+                Start the next available task from the queue. You will have {task.claim_minutes || 60} minutes to complete and submit.
               </p>
             </div>
 

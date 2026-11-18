@@ -134,7 +134,7 @@ export default async function ContributorWorkPage() {
                       {effectiveRate
                         ? isHourly
                           ? `${formatCents(effectiveRate)}/hr`
-                          : `${formatCents(effectiveRate)} / item`
+                          : `${formatCents(effectiveRate)} / task`
                         : formatPay(task.pay_min, task.pay_max, task.pay_unit)}
                     </span>
                   </div>
@@ -144,7 +144,7 @@ export default async function ContributorWorkPage() {
                       <Link href={`/work/${task.slug}`}>{task.title}</Link>
                     </h3>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      {isHourly ? "Hourly timesheet model" : "Per-approved-item compensation model"}
+                      {isHourly ? "Hourly timesheet model" : "Per-approved-task compensation model"}
                     </p>
                   </div>
 
@@ -223,7 +223,7 @@ export default async function ContributorWorkPage() {
               No Approved Tasks Yet
             </h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Once an administrator reviews and approves your task application, it will appear here so you can immediately claim work items or log hours.
+              Once an administrator reviews and approves your task application, it will appear here so you can immediately start tasks or log hours.
             </p>
           </div>
           <Link href="/tasks">

@@ -94,8 +94,8 @@ export function TimesheetView({
     if (res.error) {
       toast.error("Failed to log time", { description: res.error });
     } else {
-      toast.success("Time entry submitted", {
-        description: `${formatMinutes(totalMins)} logged for ${formatDate(workDate)}.`,
+      toast.success("Time logged and approved", {
+        description: `${formatMinutes(totalMins)} for ${formatDate(workDate)} has been added to your earnings.`,
       });
       setHours("");
       setMinutes("");
@@ -144,7 +144,7 @@ export function TimesheetView({
       cell: (entry) => (
         <div className="max-w-sm break-words text-foreground/90">
           <p className="line-clamp-2 sm:line-clamp-none">{entry.description}</p>
-          {entry.reviewer_note && (
+          {entry.reviewer_note && entry.status === "rejected" && (
             <span className="block text-[11px] text-destructive italic mt-0.5">
               Note: {entry.reviewer_note}
             </span>

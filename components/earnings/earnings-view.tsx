@@ -23,7 +23,6 @@ import {
   formatDateTime,
   maskDetails,
 } from "@/lib/utils";
-import { MIN_PAYOUT_CENTS, HOLD_DAYS } from "@/lib/constants";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,18 +109,6 @@ export function EarningsView({
   const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const [deletingMethodId, setDeletingMethodId] = React.useState<string | null>(null);
 
-  // Find next pending clearing date
-  const nextClearingDate = React.useMemo(() => {
-    const futureEntries = ledger.filter(
-      (e) => new Date(e.available_at).getTime() > Date.now() && e.amount_cents > 0
-    );
-    if (futureEntries.length === 0) return null;
-    futureEntries.sort(
-      (a, b) => new Date(a.available_at).getTime() - new Date(b.available_at).getTime()
-    );
-    return futureEntries[0].available_at;
-  }, [ledger]);
-
   // Distinct months in ledger
   const availableMonths = React.useMemo(() => {
     const months = new Set<string>();
@@ -146,11 +133,14 @@ export function EarningsView({
     });
   }, [ledger, kindFilter, monthFilter]);
 
-  // Payouts are released automatically every two weeks — there is no manual withdrawal.
-  const payoutReady =
-    wallet.available_cents >= MIN_PAYOUT_CENTS &&
-    !profile.payouts_blocked &&
-    methods.length > 0;
+  // Payouts are released every two weeks — there is no manual withdrawal.
+  const awaitingCents = Math.max(0, wallet.available_cents + wallet.pending_cents);
+  const lastPaidPayout = payouts.find((p) => p.status === "paid") || null;
+  const payoutNotice = profile.payouts_blocked
+    ? "Payouts are paused on this account — please contact support."
+    : methods.length === 0
+    ? "Add a Wise or Payoneer payout method so we can send your funds."
+    : null;
 
   // CSV Export for filtered ledger
   function exportLedgerCSV() {
@@ -256,7 +246,7 @@ export function EarningsView({
             Earnings & Wallet
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            Real-time computed balance, immutable audit ledger, and disbursement history.
+            What you&apos;re owed, what you&apos;ve been paid, and how you earned it.
           </p>
         </div>
 
@@ -268,126 +258,63 @@ export function EarningsView({
         )}
       </div>
 
-      {/* Top Row: 4 Balance Cards */}
-      <div className="grid grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {/* Card 1: Available balance + automatic biweekly release notice */}
-        <div className="bg-card rounded-[14px] border border-border p-5 shadow-2xs flex flex-col justify-between gap-4">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold">Available</span>
-            <Wallet className="h-4 w-4 text-[#0F766E]" />
-          </div>
-
-          <div className="flex flex-col gap-4">
-            <div>
-              <span className="font-heading font-extrabold text-2xl sm:text-3xl text-[#0F766E]">
-                {formatCents(wallet.available_cents)}
-              </span>
-              <span className="text-[10px] text-muted-foreground block mt-0.5">
-                Cleared of all holds
-              </span>
-            </div>
-
-            <div className="flex items-start gap-2 rounded-lg bg-[#0F766E]/5 border border-[#0F766E]/15 px-3 py-2 text-[11px] text-foreground">
-              <Calendar className="h-3.5 w-3.5 text-[#0F766E] shrink-0 mt-0.5" />
-              <span>
-                Funds are released automatically <strong>every two weeks</strong> to your default
-                payout method. No withdrawal request needed.
-              </span>
+      {/* Balance cards: awaiting payout (pending + available) and total paid out */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+        <div className="relative overflow-hidden rounded-[18px] border border-[#0F766E]/25 bg-gradient-to-br from-[#F0FDFA] via-card to-card p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-[#0F766E]">Awaiting payout</span>
+            <div className="w-9 h-9 rounded-xl bg-[#0F766E] text-white flex items-center justify-center shadow-xs">
+              <Wallet className="h-4.5 w-4.5" />
             </div>
           </div>
 
-          <div className="pt-2 border-t border-border/50 text-[11px] text-muted-foreground">
-            {!payoutReady ? (
-              <span className="text-muted-foreground/90 font-medium">
-                {profile.payouts_blocked
-                  ? "Payouts are paused on this account."
-                  : methods.length === 0
-                  ? "Add a Wise or Payoneer method to receive your payouts."
-                  : wallet.available_cents < MIN_PAYOUT_CENTS
-                  ? `Balances of ${formatCents(MIN_PAYOUT_CENTS)} or more are included in the next release.`
-                  : "Payouts unavailable."}
-              </span>
-            ) : (
-              <span>Included in the next two-week release.</span>
-            )}
+          <div>
+            <span className="font-heading font-black text-4xl sm:text-5xl tracking-tight text-[#0F766E]">
+              {formatCents(awaitingCents)}
+            </span>
+            <span className="text-xs text-muted-foreground block mt-1">
+              All approved earnings and bonuses that haven&apos;t been paid out yet.
+            </span>
+          </div>
+
+          <div className="flex items-start gap-2 rounded-xl bg-[#0F766E]/5 border border-[#0F766E]/15 px-3.5 py-2.5 text-xs text-foreground">
+            <Calendar className="h-4 w-4 text-[#0F766E] shrink-0 mt-0.5" />
+            <span>
+              Funds are released <strong>every two weeks</strong> to your default payout method. No
+              withdrawal request is needed.
+              {payoutNotice && (
+                <span className="block mt-1 font-semibold text-[#B45309]">{payoutNotice}</span>
+              )}
+            </span>
           </div>
         </div>
 
-        {/* Card 2: Pending Hold with Tooltip */}
-        <div className="bg-card rounded-[14px] border border-border p-5 shadow-2xs flex flex-col justify-between gap-3">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-semibold">Pending</span>
-              <div className="relative group cursor-help">
-                <HelpCircle className="h-3.5 w-3.5 text-muted-foreground/70 hover:text-muted-foreground transition-colors" />
-                <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-2.5 bg-popover text-popover-foreground text-[11px] rounded-lg shadow-lg border border-border leading-relaxed pointer-events-none">
-                  Earnings clear into Available after the {HOLD_DAYS}-day review hold period.
-                  {nextClearingDate && (
-                    <span className="block mt-1.5 font-bold text-primary">
-                      Next clearing date: {formatDate(nextClearingDate)}
-                    </span>
-                  )}
-                </div>
-              </div>
+        <div className="rounded-[18px] border border-border bg-card p-5 sm:p-6 shadow-2xs flex flex-col gap-5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Total paid out</span>
+            <div className="w-9 h-9 rounded-xl bg-muted text-foreground flex items-center justify-center">
+              <CreditCard className="h-4.5 w-4.5" />
             </div>
-            <Clock className="h-4 w-4 text-[#B45309]" />
           </div>
 
           <div>
-            <span className="font-heading font-extrabold text-2xl sm:text-3xl text-[#B45309]">
-              {formatCents(wallet.pending_cents)}
-            </span>
-            <span className="text-[10px] text-muted-foreground block mt-0.5">
-              {nextClearingDate
-                ? `Next clearing: ${formatDate(nextClearingDate)}`
-                : `${HOLD_DAYS}-day post-approval quality hold`}
-            </span>
-          </div>
-
-          <div className="p-2.5 rounded-xl bg-muted/30 border border-border/50 text-[11px] text-muted-foreground leading-snug">
-            Clears automatically after the {HOLD_DAYS}-day review hold.
-          </div>
-        </div>
-
-        {/* Card 3: Lifetime Earned */}
-        <div className="bg-card rounded-[14px] border border-border p-5 shadow-2xs flex flex-col justify-between gap-3">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold">Lifetime Earned</span>
-            <CheckCircle2 className="h-4 w-4 text-foreground" />
-          </div>
-
-          <div>
-            <span className="font-heading font-extrabold text-2xl sm:text-3xl text-foreground">
-              {formatCents(wallet.lifetime_earned_cents)}
-            </span>
-            <span className="text-[10px] text-muted-foreground block mt-0.5">
-              Total work approvals & bonuses
-            </span>
-          </div>
-
-          <div className="p-2.5 rounded-xl bg-muted/30 border border-border/50 text-[11px] text-muted-foreground">
-            All historical earnings credited to profile.
-          </div>
-        </div>
-
-        {/* Card 4: Paid Out */}
-        <div className="bg-card rounded-[14px] border border-border p-5 shadow-2xs flex flex-col justify-between gap-3">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold">Total Paid Out</span>
-            <CreditCard className="h-4 w-4 text-muted-foreground" />
-          </div>
-
-          <div>
-            <span className="font-heading font-extrabold text-2xl sm:text-3xl text-foreground">
+            <span className="font-heading font-black text-4xl sm:text-5xl tracking-tight text-foreground">
               {formatCents(wallet.lifetime_paid_cents)}
             </span>
-            <span className="text-[10px] text-muted-foreground block mt-0.5">
-              Disbursed to your accounts
+            <span className="text-xs text-muted-foreground block mt-1">
+              Sent to your payout accounts since you joined.
             </span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-muted/30 border border-border/50 text-[11px] text-muted-foreground">
-            Net total paid out and completed.
+          <div className="flex items-center gap-2 rounded-xl bg-muted/40 border border-border/60 px-3.5 py-2.5 text-xs text-muted-foreground">
+            <CheckCircle2 className="h-4 w-4 text-[#0F766E] shrink-0" />
+            <span>
+              {lastPaidPayout
+                ? `Last payout: ${formatCents(lastPaidPayout.amount_cents)} on ${formatDate(
+                    lastPaidPayout.processed_at || lastPaidPayout.requested_at
+                  )}`
+                : "Your first payout will appear here once it's sent."}
+            </span>
           </div>
         </div>
       </div>
@@ -396,7 +323,7 @@ export function EarningsView({
       <div className="flex items-center gap-1.5 border-b border-border pb-2 overflow-x-auto">
         {[
           { id: "activity", label: `Ledger Activity (${ledger.length})` },
-          { id: "payouts", label: `Payout Requests (${payouts.length})` },
+          { id: "payouts", label: `Payout History (${payouts.length})` },
           { id: "methods", label: `Payout Methods (${methods.length})` },
           ...(hourlyTasks.length > 0
             ? [{ id: "timesheet", label: `Timesheet (${hourlyTasks.length} hourly ${hourlyTasks.length === 1 ? "task" : "tasks"})` }]
@@ -556,12 +483,12 @@ export function EarningsView({
           <ResponsiveTable
             data={payouts}
             keyExtractor={(req) => req.id}
-            emptyMessage="No payout requests submitted yet."
+            emptyMessage="No payouts yet. Funds are released every two weeks."
             columns={[
               {
-                header: "Requested Date",
+                header: "Date",
                 priority: "secondary",
-                cell: (req) => <span className="text-muted-foreground">{formatDateTime(req.requested_at)}</span>,
+                cell: (req) => <span className="text-muted-foreground">{formatDateTime(req.processed_at || req.requested_at)}</span>,
               },
               {
                 header: "Amount (USD)",

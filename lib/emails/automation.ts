@@ -11,6 +11,8 @@ import {
   assessmentFailedEmail,
   newTaskAvailableEmail,
   profileDetailsReminderEmail,
+  payoutSentEmail,
+  type PayoutEmailEntry,
 } from "@/lib/emails/templates";
 
 /* -------------------------------------------------------------------------- */
@@ -419,3 +421,96 @@ export {
   profileDetailsReminderEmail,
   formatTaskPay,
 };
+
+/* -------------------------------------------------------------------------- */
+/*  Payouts                                                                   */
+/* -------------------------------------------------------------------------- */
+
+type SnapshotEntry = {
+  kind: string;
+  amount_cents: number;
+  note: string | null;
+  created_at: string;
+};
+
+/**
+ * Emails the contributor that a payout was sent, with the log of the earnings it
+ * settles. Sent once per payout. Falls back to the ledger when the payout has no
+ * stored snapshot (payouts processed from a contributor request).
+ */
+export async function notifyPayoutSent(payoutId: string) {
+  const adminClient = createAdminClient();
+  const { data: payout, error } = await adminClient
+    .from("payout_requests")
+    .select("*")
+    .eq("id", payoutId)
+    .maybeSingle();
+  if (error || !payout || payout.status !== "paid") {
+    if (error) console.error("[Email Automation] Could not load payout:", error);
+    return;
+  }
+
+  const recipient = await getRecipient(payout.user_id);
+  if (!recipient) return;
+
+  let snapshot = (Array.isArray(payout.earnings_snapshot) ? payout.earnings_snapshot : []) as SnapshotEntry[];
+  if (snapshot.length === 0) {
+    const { data: previous } = await adminClient
+      .from("ledger_entries")
+      .select("created_at")
+      .eq("user_id", payout.user_id)
+      .eq("kind", "payout")
+      .neq("ref_id", payout.id)
+      .lt("created_at", payout.requested_at)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    let query = adminClient
+      .from("ledger_entries")
+      .select("kind, amount_cents, note, created_at")
+      .eq("user_id", payout.user_id)
+      .in("kind", ["earning", "bonus", "adjustment", "payout_reversal"])
+      .lte("created_at", payout.requested_at)
+      .order("created_at", { ascending: true });
+    if (previous?.[0]) query = query.gt("created_at", previous[0].created_at);
+    const { data } = await query;
+    snapshot = (data || []) as SnapshotEntry[];
+  }
+
+  const { data: balanceRows } = await adminClient
+    .from("ledger_entries")
+    .select("amount_cents")
+    .eq("user_id", payout.user_id);
+  const remainingCents = (balanceRows || []).reduce((sum, r) => sum + Number(r.amount_cents), 0);
+
+  const entries: PayoutEmailEntry[] = snapshot
+    .slice()
+    .reverse()
+    .map((e) => ({
+      date: e.created_at,
+      description: e.note || "Approved work",
+      kind: e.kind,
+      amountCents: Number(e.amount_cents),
+    }));
+
+  const methodType = payout.method_snapshot?.type as string | undefined;
+  const method =
+    payout.provider ||
+    (methodType && methodType !== "manual" ? methodType.charAt(0).toUpperCase() + methodType.slice(1) : null);
+
+  await dispatchDeduplicatedEmail({
+    userId: payout.user_id,
+    to: recipient.email,
+    notificationKey: `payout_sent_${payout.id}`,
+    subject: `Payout sent: $${(Number(payout.amount_cents) / 100).toFixed(2)} — Revive AI`,
+    html: payoutSentEmail({
+      name: recipient.name,
+      amountCents: Number(payout.amount_cents),
+      method,
+      reference: payout.provider_ref || "—",
+      paidAt: payout.processed_at || new Date().toISOString(),
+      note: payout.admin_note,
+      entries,
+      remainingCents,
+    }),
+  });
+}

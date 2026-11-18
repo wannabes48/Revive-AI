@@ -824,3 +824,98 @@ export function newTaskAvailableEmail(
     footerHtml: `Revive AI &bull; Project Matching &amp; Allocations`,
   });
 }
+export type PayoutEmailEntry = {
+  date: string; // ISO
+  description: string;
+  kind: string;
+  amountCents: number;
+};
+
+const usd = (cents: number) =>
+  `${cents < 0 ? "-" : ""}$${(Math.abs(cents) / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const KIND_LABELS: Record<string, string> = {
+  earning: "Earning",
+  bonus: "Bonus",
+  adjustment: "Adjustment",
+  payout_reversal: "Returned payout",
+};
+
+/**
+ * Sent when an admin marks a contributor's funds as paid out. Includes the
+ * itemised log of the earnings the payment settles.
+ */
+export function payoutSentEmail(params: {
+  name: string;
+  amountCents: number;
+  method: string | null;
+  reference: string;
+  paidAt: string;
+  note?: string | null;
+  entries: PayoutEmailEntry[];
+  remainingCents: number;
+}): string {
+  const shown = params.entries.slice(0, 50);
+  const rows = shown
+    .map(
+      (e) => `
+        <tr>
+          <td style="padding: 8px 6px; border-bottom: 1px solid #E2EAD9; white-space: nowrap; color: #475569;">${escapeHtml(
+            new Date(e.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+          )}</td>
+          <td style="padding: 8px 6px; border-bottom: 1px solid #E2EAD9;">${escapeHtml(e.description)}<br><span style="font-size: 11px; color: #64748B;">${escapeHtml(
+            KIND_LABELS[e.kind] || e.kind
+          )}</span></td>
+          <td style="padding: 8px 6px; border-bottom: 1px solid #E2EAD9; text-align: right; white-space: nowrap; font-weight: 600;">${usd(
+            e.amountCents
+          )}</td>
+        </tr>`
+    )
+    .join("");
+
+  const table =
+    shown.length > 0
+      ? `
+      <p style="margin: 20px 0 8px; font-weight: 700;">How you earned these funds</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse: collapse; font-size: 13px;">
+        <thead>
+          <tr>
+            <th align="left" style="padding: 6px; border-bottom: 2px solid #0F766E; font-size: 11px; text-transform: uppercase; color: #0F766E;">Date</th>
+            <th align="left" style="padding: 6px; border-bottom: 2px solid #0F766E; font-size: 11px; text-transform: uppercase; color: #0F766E;">Work</th>
+            <th align="right" style="padding: 6px; border-bottom: 2px solid #0F766E; font-size: 11px; text-transform: uppercase; color: #0F766E;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${
+        params.entries.length > shown.length
+          ? `<p style="font-size: 12px; color: #64748B;">Showing the ${shown.length} most recent of ${params.entries.length} entries. The full log is in your wallet.</p>`
+          : ""
+      }`
+      : "";
+
+  return renderLayout({
+    title: "Payout Sent",
+    badge: { tone: "teal", label: `${usd(params.amountCents)} paid out` },
+    heading: "Your payout is on its way",
+    bodyHtml: `
+      <p class="lead">Hi ${escapeHtml(params.name)}, we've released <strong>${usd(
+        params.amountCents
+      )}</strong> to you${params.method ? ` via <strong>${escapeHtml(params.method)}</strong>` : ""}.</p>
+      <div class="note-box">
+        <strong>Paid on:</strong> ${escapeHtml(
+          new Date(params.paidAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })
+        )} UTC<br>
+        <strong>Reference:</strong> ${escapeHtml(params.reference)}<br>
+        <strong>Remaining awaiting payout:</strong> ${usd(Math.max(0, params.remainingCents))}
+      </div>
+      ${noteBox("Note from the Revive AI team", params.note)}
+      ${table}
+      <p style="font-size: 12px; color: #64748B; margin-top: 16px;">Depending on your provider, funds can take 1–3 business days to arrive.</p>`,
+    cta: { label: "View your wallet", path: "/earnings" },
+    footerHtml: `Revive AI &bull; Contributor Payments`,
+  });
+}

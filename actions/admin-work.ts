@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { SubmissionStatus, PayoutStatus, LedgerKind } from "@/lib/supabase/types";
 import { mapRpcError } from "@/lib/rpc-errors";
+import { notifyPayoutSent } from "@/lib/emails/automation";
 
 export async function reviewSubmission(
   submissionId: string,
@@ -201,9 +202,117 @@ export async function adminProcessPayout(
     return { error: mapRpcError(error.message) };
   }
 
+  if (status === "paid") await notifyPayoutSent(payoutId);
+
   revalidatePath("/admin/payouts");
   revalidatePath("/admin/finance");
   return { success: true };
+}
+
+export type PayoutPreviewEntry = {
+  id: string;
+  kind: string;
+  amountCents: number;
+  note: string | null;
+  createdAt: string;
+  availableAt: string;
+};
+
+/** Earnings a contributor has accrued since their last payout, for the "mark as paid" dialog. */
+export async function adminGetPayoutPreview(userId: string): Promise<{
+  error?: string;
+  entries?: PayoutPreviewEntry[];
+  awaitingCents?: number;
+  method?: { type: string; details: Record<string, string> } | null;
+  lastPayoutAt?: string | null;
+}> {
+  const { supabase } = await requireAdmin();
+
+  const [{ data: ledger, error }, { data: methods }] = await Promise.all([
+    supabase
+      .from("ledger_entries")
+      .select("id, kind, amount_cents, note, created_at, available_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("payout_methods")
+      .select("type, details, is_default, created_at")
+      .eq("user_id", userId)
+      .order("is_default", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(1),
+  ]);
+  if (error) return { error: error.message };
+
+  const rows = ledger || [];
+  const awaitingCents = rows.reduce((sum, r) => sum + Number(r.amount_cents), 0);
+  const lastPayout = [...rows].reverse().find((r) => r.kind === "payout");
+  const entries = rows
+    .filter(
+      (r) =>
+        r.kind !== "payout" &&
+        (!lastPayout || new Date(r.created_at) > new Date(lastPayout.created_at))
+    )
+    .reverse()
+    .map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      amountCents: Number(r.amount_cents),
+      note: r.note,
+      createdAt: r.created_at,
+      availableAt: r.available_at,
+    }));
+
+  return {
+    entries,
+    awaitingCents,
+    method: methods?.[0] ? { type: methods[0].type, details: methods[0].details } : null,
+    lastPayoutAt: lastPayout?.created_at ?? null,
+  };
+}
+
+/** Records funds sent to a contributor, debits their wallet and emails them the earnings log. */
+export async function adminRecordPayout(input: {
+  userId: string;
+  amountCents: number;
+  provider: string;
+  reference: string;
+  note?: string;
+}) {
+  const { supabase } = await requireAdmin();
+
+  if (!input.reference?.trim()) {
+    return { error: "Enter the transfer reference (e.g. Wise transfer ID or Payoneer payment ID)." };
+  }
+  if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
+    return { error: "Enter an amount greater than $0.00." };
+  }
+
+  const { data: payoutId, error } = await supabase.rpc("admin_record_payout", {
+    p_user: input.userId,
+    p_amount: input.amountCents,
+    p_provider: input.provider?.trim() || null,
+    p_ref: input.reference.trim(),
+    p_note: input.note?.trim() || null,
+  });
+
+  if (error) {
+    if (/admin_record_payout|function .* does not exist/i.test(error.message)) {
+      return { error: "Apply supabase/012_hourly_auto_approve_and_manual_payouts.sql to enable payouts." };
+    }
+    return {
+      error: error.message.includes("insufficient_funds")
+        ? "That is more than this contributor's awaiting balance."
+        : mapRpcError(error.message),
+    };
+  }
+
+  if (payoutId) await notifyPayoutSent(payoutId as string);
+
+  revalidatePath("/admin/payouts");
+  revalidatePath("/admin/finance");
+  revalidatePath("/earnings");
+  return { success: true, payoutId: payoutId as string };
 }
 
 export async function adminTogglePayoutsBlocked(userId: string, blocked: boolean) {

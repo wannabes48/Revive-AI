@@ -171,7 +171,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
 
   // Release Item Handler
   async function handleRelease() {
-    if (!confirm("Are you sure you want to release this work item? It will be returned to the queue for other contributors.")) {
+    if (!confirm("Are you sure you want to release this task? It will be returned to the queue for other contributors.")) {
       return;
     }
     setReleasing(true);
@@ -188,10 +188,10 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
     setClaimingNext(false);
 
     if (res?.empty) {
-      toast.error("Queue Empty", { description: "No items available right now. Check back soon." });
+      toast.error("Queue Empty", { description: "No tasks available right now. Check back soon." });
       router.push(`/work/${task.slug}`);
     } else if (res?.error) {
-      toast.error("Could not claim next item", { description: res.error });
+      toast.error("Could not start the next task", { description: res.error });
       router.push(`/work/${task.slug}`);
     }
   }
@@ -265,7 +265,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         <div className="flex items-center gap-2.5 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>
-            Your claim timer has expired. Your submission will still be accepted unless another contributor claims this item first.
+            Your claim timer has expired. Your submission will still be accepted unless another contributor claims this task first.
           </span>
         </div>
       )}
@@ -303,7 +303,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         <div className="lg:col-span-7 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-36 max-h-[calc(100dvh-160px)] overflow-y-auto min-w-0 max-w-full">
           <div className="flex items-center justify-between pb-3 border-b border-border/60">
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Work Item #{item.id.slice(0, 8)}
+              Task #{item.id.slice(0, 8)}
             </span>
             {item.external_ref && (
               <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[150px]">
@@ -541,7 +541,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
       <ResponsiveDialog
         open={successModal}
         onOpenChange={setSuccessModal}
-        title="Item Submitted Successfully!"
+        title="Task Submitted Successfully!"
         description={`Your evaluation has been submitted to the admin review queue. Upon approval, ${formatCents(rateCents)} will be credited to your wallet.`}
         footer={
           <>
@@ -564,7 +564,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
               ) : (
                 <ArrowRight className="h-4 w-4" />
               )}
-              <span>Next Available Item</span>
+              <span>Next Task</span>
             </Button>
           </>
         }

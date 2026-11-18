@@ -114,6 +114,7 @@ export async function logTime(
 
   revalidatePath(`/work`);
   revalidatePath(`/earnings`);
+  revalidatePath("/dashboard");
   return { success: true };
 }
 

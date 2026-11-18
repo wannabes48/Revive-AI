@@ -206,7 +206,7 @@ export default async function SubmissionHistoryPage({
         <div className="p-12 text-center bg-card rounded-[14px] border border-dashed border-border space-y-2">
           <p className="font-heading font-bold text-sm text-foreground">No Submissions Yet</p>
           <p className="text-xs text-muted-foreground">
-            You haven&apos;t evaluated any items for this task yet.
+            You haven&apos;t completed any tasks here yet.
           </p>
           <div className="pt-2">
             <Link href={`/work/${task.slug}`}>

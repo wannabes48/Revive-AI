@@ -12,6 +12,7 @@ const MESSAGES: Record<string, string> = {
   reference_required: "A transaction reference (e.g. Wise transfer ID or Payoneer payment ID) is required.",
   note_required: "A written note or explanation is required.",
   forbidden: "You do not have permission to perform that action.",
+  invalid_amount: "Enter an amount greater than $0.00.",
 };
 
 export const mapRpcError = (msg?: string) => {

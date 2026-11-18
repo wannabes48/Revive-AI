@@ -26,10 +26,10 @@ export function StartItemButton({
 
     if (res?.empty) {
       toast.error("Queue Empty", {
-        description: "No items available right now. Check back soon.",
+        description: "No tasks available right now. Check back soon.",
       });
     } else if (res?.error) {
-      toast.error("Could not claim item", {
+      toast.error("Could not start the next task", {
         description: res.error,
       });
     }
@@ -46,7 +46,7 @@ export function StartItemButton({
       ) : (
         <Play className="h-3.5 w-3.5 fill-current" />
       )}
-      <span>Start Next Item</span>
+      <span>Start Next Task</span>
     </Button>
   );
 }
