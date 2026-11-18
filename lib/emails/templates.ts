@@ -9,6 +9,8 @@
  * Text Muted: #5B7773
  */
 
+import { getPublicSiteUrl } from "@/lib/site-url";
+
 function getBaseStyles(): string {
   return `
     body {
@@ -137,13 +139,8 @@ function getBaseStyles(): string {
   `;
 }
 
-function getSiteUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    "https://joinreviveai.com"
-  );
-}
+// Email links must always open the live site, never localhost.
+const getSiteUrl = getPublicSiteUrl;
 
 /**
  * 1. Welcome Email: sent after signup confirmation
@@ -227,7 +224,7 @@ export function applicationReceivedEmail(name: string, taskTitle: string): strin
       </div>
     </div>
     <div class="footer">
-      Revive AI &bull; Track all your submissions on <a href="${siteUrl}/applications">reviveai.com/applications</a>.
+      Revive AI &bull; Track all your submissions on <a href="${siteUrl}/applications">joinreviveai.com/applications</a>.
     </div>
   </div>
 </body>
@@ -314,7 +311,7 @@ export function applicationStatusChangedEmail(
       </p>
     </div>
     <div class="footer">
-      Revive AI &bull; Manage your applications and standing at <a href="${siteUrl}/applications">reviveai.com/applications</a>.
+      Revive AI &bull; Manage your applications and standing at <a href="${siteUrl}/applications">joinreviveai.com/applications</a>.
     </div>
   </div>
 </body>
@@ -652,6 +649,7 @@ export function waitlistWelcomeEmail(name: string): string {
  * Sent when an admin admits a contributor from the waitlist.
  */
 export function accountApprovedEmail(name: string): string {
+  const siteUrl = getSiteUrl();
   return renderLayout({
     title: "You're In",
     badge: { tone: "teal", label: "Account approved" },

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
+import { getPublicSiteUrl } from "@/lib/site-url";
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,14 +14,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const host =
-      req.headers.get("x-forwarded-host") || req.headers.get("host") || "localhost:3000";
-    const protocol =
-      req.headers.get("x-forwarded-proto") || (host.includes("localhost") ? "http" : "https");
-    const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      process.env.NEXT_PUBLIC_SITE_URL ||
-      `${protocol}://${host}`;
+    const appUrl = getPublicSiteUrl();
 
     const apiKey =
       process.env.DIDIT_API_KEY ||

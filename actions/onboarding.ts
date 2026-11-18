@@ -8,6 +8,7 @@ import {
   notifyOnboardingProgress,
 } from "@/lib/emails/automation";
 import { z } from "zod";
+import { getPublicSiteUrl } from "@/lib/site-url";
 
 const manualKycSchema = z.object({
   documentType: z.enum(["passport", "national_id", "driver_license"]),
@@ -567,10 +568,7 @@ export async function initiateDiditKyc(
   const apiKey = process.env.DIDIT_API_KEY || process.env.DIDIT_CLIENT_SECRET;
   const workflowId = process.env.DIDIT_WORKFLOW_ID;
 
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    "http://localhost:3000";
+  const appUrl = getPublicSiteUrl();
 
   let sessionId: string | null = null;
   let verificationUrl: string | null = null;

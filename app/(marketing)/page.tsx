@@ -126,7 +126,7 @@ const faqData: FaqSectionData = {
         {
           id: 2,
           question: "How and when do contributors get paid?",
-          answer: "Tasks offer hourly compensation ($65–$200/hr) or per-item payouts. Approved contributors track completed work and withdraw funds to Wise or Payoneer once approved.",
+          answer: "Tasks offer hourly compensation ($65–$200/hr) or per-item payouts. Approved contributors track completed work, and earnings are released to Wise or Payoneer automatically every two weeks.",
         },
         {
           id: 3,
@@ -157,8 +157,8 @@ const faqData: FaqSectionData = {
         },
         {
           id: 7,
-          question: "What is the minimum withdrawal balance?",
-          answer: "The platform enforces a minimum withdrawal threshold of $25.00 via trusted cross-border payout providers including Wise and Payoneer.",
+          question: "How often are earnings paid out?",
+          answer: "Earnings are released automatically every two weeks to your Wise or Payoneer account. Balances of $25.00 or more are included in each release — no withdrawal request needed.",
         },
         {
           id: 8,

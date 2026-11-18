@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { headers } from "next/headers";
+import { getPublicSiteUrl } from "@/lib/site-url";
 import { createClient } from "@/lib/supabase/server";
 import {
   loginSchema,
@@ -13,11 +13,10 @@ import {
 import { sendEmail } from "@/lib/emails/resend";
 import { waitlistWelcomeEmail } from "@/lib/emails/templates";
 
+// Used for links inside Supabase confirmation / password-reset emails,
+// so it must point at the live site, never localhost.
 async function getOrigin() {
-  const headerList = await headers();
-  const host = headerList.get("host") || "localhost:3000";
-  const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
-  return process.env.NEXT_PUBLIC_SITE_URL || `${protocol}://${host}`;
+  return getPublicSiteUrl();
 }
 
 export type ActionResponse = {

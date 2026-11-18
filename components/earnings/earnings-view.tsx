@@ -15,7 +15,6 @@ import {
   savePayoutMethod,
   deletePayoutMethod,
   setDefaultPayoutMethod,
-  requestPayout,
   cancelMyPayout,
 } from "@/actions/payouts";
 import {
@@ -35,7 +34,6 @@ import { TimesheetView } from "@/components/work/timesheet-view";
 import {
   Wallet,
   Clock,
-  ArrowDownToLine,
   CreditCard,
   Plus,
   Trash2,
@@ -101,17 +99,6 @@ export function EarningsView({
   const [kindFilter, setKindFilter] = React.useState<string>("all");
   const [monthFilter, setMonthFilter] = React.useState<string>("all");
 
-  // Withdraw Modal State
-  const [withdrawOpen, setWithdrawOpen] = React.useState(false);
-  const [selectedMethodId, setSelectedMethodId] = React.useState<string>(() => {
-    const defaultM = methods.find((m) => m.is_default);
-    return defaultM ? defaultM.id : methods[0]?.id || "";
-  });
-  const [withdrawDollars, setWithdrawDollars] = React.useState<string>(
-    wallet.available_cents > 0 ? (wallet.available_cents / 100).toFixed(2) : "0.00"
-  );
-  const [isWithdrawing, setIsWithdrawing] = React.useState(false);
-
   // Add Method Modal State (Wise & Payoneer)
   const [addMethodOpen, setAddMethodOpen] = React.useState(false);
   const [methodType, setMethodType] = React.useState<"wise" | "payoneer">("wise");
@@ -159,9 +146,8 @@ export function EarningsView({
     });
   }, [ledger, kindFilter, monthFilter]);
 
-  // Withdraw calculations
-  const parsedWithdrawCents = Math.round(parseFloat(withdrawDollars || "0") * 100);
-  const canWithdraw =
+  // Payouts are released automatically every two weeks — there is no manual withdrawal.
+  const payoutReady =
     wallet.available_cents >= MIN_PAYOUT_CENTS &&
     !profile.payouts_blocked &&
     methods.length > 0;
@@ -194,43 +180,6 @@ export function EarningsView({
     document.body.removeChild(link);
   }
 
-  // Handle Request Payout
-  async function handleRequestPayout(e: React.FormEvent) {
-    e.preventDefault();
-
-    if (parsedWithdrawCents < MIN_PAYOUT_CENTS) {
-      toast.error("Amount below minimum", {
-        description: `Minimum withdrawal is ${formatCents(MIN_PAYOUT_CENTS)}.`,
-      });
-      return;
-    }
-
-    if (parsedWithdrawCents > wallet.available_cents) {
-      toast.error("Insufficient available balance.");
-      return;
-    }
-
-    if (!selectedMethodId) {
-      toast.error("Please select a payout method.");
-      return;
-    }
-
-    setIsWithdrawing(true);
-    const res = await requestPayout(selectedMethodId, parsedWithdrawCents);
-    setIsWithdrawing(false);
-
-    if (res.error) {
-      toast.error("Payout request failed", { description: res.error });
-    } else {
-      toast.success("Payout Requested", {
-        description: `Your withdrawal of ${formatCents(parsedWithdrawCents)} has been submitted. Processing time is 1–3 business days. Track progress on the Payouts tab.`,
-      });
-      setWithdrawOpen(false);
-      setActiveTab("payouts");
-      router.refresh();
-    }
-  }
-
   // Handle Save Payout Method (Wise & Payoneer)
   async function handleSaveMethod(e: React.FormEvent) {
     e.preventDefault();
@@ -249,7 +198,7 @@ export function EarningsView({
       toast.error("Could not save method", { description: res.error });
     } else {
       toast.success("Payout method saved", {
-        description: "New methods are subject to a 48-hour authorization security period before withdrawals.",
+        description: "New methods are subject to a 48-hour authorization security period before they receive payouts.",
       });
       setAddMethodOpen(false);
       setAccountEmail("");
@@ -314,14 +263,14 @@ export function EarningsView({
         {profile.payouts_blocked && (
           <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-destructive/10 text-destructive border border-destructive/20 text-xs font-semibold">
             <ShieldAlert className="h-4 w-4 shrink-0" />
-            <span>Withdrawals are currently paused on this account. Contact support.</span>
+            <span>Payouts are currently paused on this account. Contact support.</span>
           </div>
         )}
       </div>
 
       {/* Top Row: 4 Balance Cards */}
       <div className="grid grid-cols-1 min-[360px]:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {/* Card 1: Available + Withdraw Button Beside */}
+        {/* Card 1: Available balance + automatic biweekly release notice */}
         <div className="bg-card rounded-[14px] border border-border p-5 shadow-2xs flex flex-col justify-between gap-4">
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-semibold">Available</span>
@@ -338,33 +287,28 @@ export function EarningsView({
               </span>
             </div>
 
-            <Button
-              size="sm"
-              disabled={!canWithdraw}
-              onClick={() => {
-                setWithdrawDollars((wallet.available_cents / 100).toFixed(2));
-                setWithdrawOpen(true);
-              }}
-              className="w-fullrounded-full text-xs font-bold gap-1.5 h-8 px-4 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs shrink-0"
-            >
-              <ArrowDownToLine className="h-3.5 w-3.5" />
-              <span>Withdraw</span>
-            </Button>
+            <div className="flex items-start gap-2 rounded-lg bg-[#0F766E]/5 border border-[#0F766E]/15 px-3 py-2 text-[11px] text-foreground">
+              <Calendar className="h-3.5 w-3.5 text-[#0F766E] shrink-0 mt-0.5" />
+              <span>
+                Funds are released automatically <strong>every two weeks</strong> to your default
+                payout method. No withdrawal request needed.
+              </span>
+            </div>
           </div>
 
           <div className="pt-2 border-t border-border/50 text-[11px] text-muted-foreground">
-            {!canWithdraw ? (
+            {!payoutReady ? (
               <span className="text-muted-foreground/90 font-medium">
                 {profile.payouts_blocked
-                  ? "Withdrawals paused on this account."
+                  ? "Payouts are paused on this account."
                   : methods.length === 0
-                  ? "Add a Wise or Payoneer method to enable withdrawals."
+                  ? "Add a Wise or Payoneer method to receive your payouts."
                   : wallet.available_cents < MIN_PAYOUT_CENTS
-                  ? `Min withdrawal is ${formatCents(MIN_PAYOUT_CENTS)}.`
-                  : "Withdrawals unavailable."}
+                  ? `Balances of ${formatCents(MIN_PAYOUT_CENTS)} or more are included in the next release.`
+                  : "Payouts unavailable."}
               </span>
             ) : (
-              <span>Ready for disbursement to Wise or Payoneer.</span>
+              <span>Included in the next two-week release.</span>
             )}
           </div>
         </div>
@@ -605,7 +549,7 @@ export function EarningsView({
         <div className="bg-card rounded-[14px] border border-border shadow-2xs overflow-hidden">
           <div className="p-4 border-b border-border/60">
             <h3 className="font-heading font-bold text-sm text-foreground">
-              Withdrawal & Disbursement History ({payouts.length})
+              Payout & Disbursement History ({payouts.length})
             </h3>
           </div>
 
@@ -712,7 +656,7 @@ export function EarningsView({
                 Configured Payout Methods
               </h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Add your Wise or Payoneer accounts to withdraw earnings in USD.
+                Add your Wise or Payoneer account to receive your biweekly payouts in USD.
               </p>
             </div>
 
@@ -780,7 +724,7 @@ export function EarningsView({
 
                   {isNew && (
                     <div className="p-2.5 rounded-lg bg-[#FEF3C7] border border-[#FDE68A] text-[#78350F] text-[11px] leading-snug">
-                      Security hold: This new payout method will be ready for withdrawals after 48 hours.
+                      Security hold: This new payout method will be ready to receive payouts after 48 hours.
                     </div>
                   )}
 
@@ -806,7 +750,7 @@ export function EarningsView({
                 <div>
                   <h4 className="font-heading font-bold text-sm text-foreground">No payout methods added</h4>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Add your Wise or Payoneer account to withdraw your earnings.
+                    Add your Wise or Payoneer account to receive your earnings every two weeks.
                   </p>
                 </div>
                 <Button
@@ -851,112 +795,6 @@ export function EarningsView({
           />
         </div>
       )}
-
-      {/* WITHDRAW MODAL */}
-      <ResponsiveDialog
-        open={withdrawOpen}
-        onOpenChange={setWithdrawOpen}
-        title="Withdraw Available Earnings"
-        description="Disburse your cleared balance to your verified Wise or Payoneer account."
-        footer={
-          <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 w-full">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setWithdrawOpen(false)}
-              className="rounded-full text-xs h-10 touch-target"
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              form="withdraw-form"
-              disabled={isWithdrawing || parsedWithdrawCents < MIN_PAYOUT_CENTS}
-              className="rounded-full text-xs font-bold gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 h-10 touch-target"
-            >
-              {isWithdrawing ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ArrowDownToLine className="h-3.5 w-3.5" />
-              )}
-              <span>Confirm Withdrawal</span>
-            </Button>
-          </div>
-        }
-      >
-        <form id="withdraw-form" onSubmit={handleRequestPayout} className="space-y-4 pt-1">
-          {/* Payout Method Selector */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold">Destination Method</Label>
-            <select
-              value={selectedMethodId}
-              onChange={(e) => setSelectedMethodId(e.target.value)}
-              className="w-full h-10 min-h-[44px] rounded-lg border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary cursor-pointer"
-            >
-              {methods.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.type.toUpperCase()}: {maskDetails(m.type, m.details)} {m.is_default ? "(Default)" : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Amount Input (Prefilled with Available, Minimum $25.00) */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="withdraw_dollars" className="text-xs font-semibold">
-                Amount (USD)
-              </Label>
-              <span className="text-[11px] text-muted-foreground font-mono">
-                Available: {formatCents(wallet.available_cents)}
-              </span>
-            </div>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs font-bold">
-                $
-              </span>
-              <Input
-                id="withdraw_dollars"
-                type="number"
-                inputMode="decimal"
-                step="0.01"
-                min="25.00"
-                max={(wallet.available_cents / 100).toFixed(2)}
-                value={withdrawDollars}
-                onChange={(e) => setWithdrawDollars(e.target.value)}
-                className="pl-7 text-base sm:text-xs h-10 min-h-[44px] bg-background font-mono font-bold"
-                required
-              />
-            </div>
-            <span className="text-[10px] text-muted-foreground block">
-              Minimum withdrawal amount is {formatCents(MIN_PAYOUT_CENTS)}.
-            </span>
-          </div>
-
-          {/* Calculations Breakdown */}
-          <div className="p-3.5 rounded-xl bg-muted/30 border border-border/60 text-xs space-y-2">
-            <div className="flex items-center justify-between text-muted-foreground">
-              <span>Platform Processing Fee</span>
-              <span className="font-mono font-semibold text-foreground">$0.00 (Free)</span>
-            </div>
-            <div className="flex items-center justify-between font-bold text-foreground pt-1 border-t border-border/50">
-              <span>Net Disbursement</span>
-              <span className="font-mono text-[#0F766E] text-sm">
-                {formatCents(parsedWithdrawCents)} USD
-              </span>
-            </div>
-            <div className="space-y-1 pt-1 border-t border-border/50">
-              <p className="text-[10px] text-muted-foreground leading-relaxed">
-                Funds will be disbursed in USD directly to your selected payout account. Wise or Payoneer converts to your local currency upon arrival if requested.
-              </p>
-              <p className="text-[10px] font-semibold text-foreground/80">
-                Processing timeline: 1 to 3 business days.
-              </p>
-            </div>
-          </div>
-        </form>
-      </ResponsiveDialog>
 
       {/* ADD PAYOUT METHOD MODAL (WISE & PAYONEER) */}
       <ResponsiveDialog
@@ -1044,7 +882,7 @@ export function EarningsView({
           </div>
 
           <div className="p-3 rounded-xl bg-muted/30 border border-border/60 text-[11px] text-muted-foreground">
-            Security notice: For your account protection, new payout methods require a 48-hour authorization hold before withdrawals can be initiated.
+            Security notice: For your account protection, new payout methods require a 48-hour authorization hold before they can receive payouts.
           </div>
         </form>
       </ResponsiveDialog>

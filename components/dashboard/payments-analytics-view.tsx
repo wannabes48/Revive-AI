@@ -153,7 +153,7 @@ export function PaymentsAnalyticsView({ analytics }: PaymentsAnalyticsViewProps)
             ${analytics.awaitingPayoutDollars.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Accrued in current open weekly cycle • Scheduled next payout run.
+            Accrued in the current two-week cycle • Released automatically every two weeks.
           </p>
         </div>
 
