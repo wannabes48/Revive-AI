@@ -295,7 +295,7 @@ export function applicationStatusChangedEmail(
           ? `
           <div class="note-box">
             <strong style="display: block; margin-bottom: 4px; color: #0F766E;">Reviewer Note:</strong>
-            ${adminNote.trim()}
+            ${escapeHtml(adminNote.trim())}
           </div>
           `
           : ""
@@ -560,4 +560,269 @@ export function projectAvailabilityReminderEmail(
 </body>
 </html>
   `.trim();
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Journey emails (account admission, KYC lifecycle, assessments, projects)  */
+/* -------------------------------------------------------------------------- */
+
+/** Escape user- or admin-supplied text before interpolating it into HTML. */
+export function escapeHtml(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderLayout(params: {
+  title: string;
+  badge?: { tone: "teal" | "amber" | "red"; label: string };
+  heading: string;
+  bodyHtml: string;
+  cta?: { label: string; path: string };
+  footerHtml: string;
+}): string {
+  const siteUrl = getSiteUrl();
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${params.title} - Revive AI</title>
+  <style>${getBaseStyles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="logo">Revive<span>AI</span></div>
+    </div>
+    <div class="content">
+      ${
+        params.badge
+          ? `<div style="margin-bottom: 16px;"><span class="badge-${params.badge.tone}">${params.badge.label}</span></div>`
+          : ""
+      }
+      <h1>${params.heading}</h1>
+      ${params.bodyHtml}
+      ${
+        params.cta
+          ? `<div style="margin: 24px 0 16px;"><a href="${siteUrl}${params.cta.path}" class="btn">${params.cta.label}</a></div>`
+          : ""
+      }
+    </div>
+    <div class="footer">
+      ${params.footerHtml}
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+function noteBox(label: string, text: string | null | undefined): string {
+  if (!text || !text.trim()) return "";
+  return `
+    <div class="note-box">
+      <strong style="display: block; margin-bottom: 4px; color: #0F766E;">${label}</strong>
+      ${escapeHtml(text.trim()).replace(/\n/g, "<br>")}
+    </div>`;
+}
+
+/**
+ * Sent right after signup: the account exists but is on the admissions waitlist.
+ */
+export function waitlistWelcomeEmail(name: string): string {
+  return renderLayout({
+    title: "Welcome to Revive AI",
+    badge: { tone: "amber", label: "Status: On the admissions waitlist" },
+    heading: `Welcome, ${escapeHtml(name)}!`,
+    bodyHtml: `
+      <p class="lead">Thanks for signing up to Revive AI. Your contributor account has been created.</p>
+      <p>We admit contributors in cohorts to match incoming AI evaluation work. Our team will review your profile and email you as soon as your account is approved.</p>
+      <p>A complete profile (expertise, country, and a professional bio) helps us admit you faster.</p>`,
+    cta: { label: "Check My Waitlist Status", path: "/waitlist" },
+    footerHtml: `Revive AI &bull; Expert Tasking &amp; Benchmark Platform<br>This email confirms your new registration.`,
+  });
+}
+
+/**
+ * Sent when an admin admits a contributor from the waitlist.
+ */
+export function accountApprovedEmail(name: string): string {
+  return renderLayout({
+    title: "You're In",
+    badge: { tone: "teal", label: "Account approved" },
+    heading: "Your Revive AI account is approved",
+    bodyHtml: `
+      <p class="lead">Great news, ${escapeHtml(name)} — you've been admitted from the waitlist.</p>
+      <p>You now have full access to your contributor dashboard. Complete onboarding to unlock paid AI evaluation projects:</p>
+      <div class="note-box">
+        <strong style="display: block; margin-bottom: 6px; color: #0F766E;">Your onboarding checklist:</strong>
+        1. Identity Verification (KYC)<br>
+        2. Payments &amp; Tax Setup<br>
+        3. Project Terms &amp; NDA<br>
+        4. Screening Assessment<br>
+        5. Qualifications &amp; Tooling Check
+      </div>
+      <p>Most contributors finish in under 30 minutes.</p>`,
+    cta: { label: "Start Onboarding", path: `${getSiteUrl()}/dashboard?tab=ai-work` },
+    footerHtml: `Revive AI &bull; Contributor Admissions<br>Sign in anytime at <a href="${getSiteUrl()}/login">joinreviveai.com</a>.`,
+  });
+}
+
+/**
+ * Sent when an admin declines a waitlisted contributor.
+ */
+export function accountRejectedEmail(name: string, reason?: string | null): string {
+  return renderLayout({
+    title: "Admissions Update",
+    heading: "An update on your Revive AI application",
+    bodyHtml: `
+      <p class="lead">Hi ${escapeHtml(name)},</p>
+      <p>Thank you for your interest in contributing to Revive AI. After reviewing your profile, we're unable to admit your account at this time.</p>
+      ${noteBox("Note from our team:", reason)}
+      <p>Admissions depend on the expertise our current projects need, so this may change as new work opens up.</p>`,
+    footerHtml: `Revive AI &bull; Contributor Admissions`,
+  });
+}
+
+export type KycEmailKind = "submitted" | "rejected" | "resubmission_requested" | "reset";
+
+/**
+ * KYC lifecycle emails other than approval (approval uses onboardingStepCompletedEmail).
+ */
+export function kycStatusEmail(
+  name: string,
+  kind: KycEmailKind,
+  note?: string | null,
+  reasons?: string[] | null
+): string {
+  const safeName = escapeHtml(name);
+  const reasonsHtml =
+    reasons && reasons.length > 0
+      ? `<div class="note-box"><strong style="display: block; margin-bottom: 6px; color: #0F766E;">Reasons:</strong>${reasons
+          .map((r) => `&bull; ${escapeHtml(r)}`)
+          .join("<br>")}</div>`
+      : "";
+
+  switch (kind) {
+    case "submitted":
+      return renderLayout({
+        title: "Identity Verification Received",
+        badge: { tone: "amber", label: "In review" },
+        heading: "We've received your identity verification",
+        bodyHtml: `
+          <p class="lead">Thanks, ${safeName}. Your identity documents are now being reviewed.</p>
+          <p>Most reviews finish within one business day. We'll email you as soon as there's a decision. Meanwhile you can keep working through the rest of your onboarding checklist.</p>`,
+        cta: { label: "Go to Dashboard", path: "/dashboard?tab=ai-work" },
+        footerHtml: `Revive AI &bull; Contributor Compliance`,
+      });
+    case "rejected":
+      return renderLayout({
+        title: "Identity Verification Declined",
+        badge: { tone: "red", label: "Verification declined" },
+        heading: "We couldn't verify your identity",
+        bodyHtml: `
+          <p class="lead">Hi ${safeName}, unfortunately your identity verification was not approved.</p>
+          ${reasonsHtml}
+          ${noteBox("Note from compliance:", note)}
+          <p>Common fixes: use a valid, unexpired government ID, make sure all four corners are visible, and take your selfie in good lighting.</p>`,
+        cta: { label: "Retry Verification", path: "/dashboard?tab=ai-work" },
+        footerHtml: `Revive AI &bull; Contributor Compliance`,
+      });
+    case "resubmission_requested":
+      return renderLayout({
+        title: "Action Needed: Resubmit Identity Documents",
+        badge: { tone: "amber", label: "Action required" },
+        heading: "Please resubmit your identity verification",
+        bodyHtml: `
+          <p class="lead">Hi ${safeName}, our compliance team needs updated identity documents from you.</p>
+          ${noteBox("What we need:", note)}
+          <p>Start a new verification from your dashboard — it takes about 3 minutes.</p>`,
+        cta: { label: "Resubmit Verification", path: "/dashboard?tab=ai-work" },
+        footerHtml: `Revive AI &bull; Contributor Compliance`,
+      });
+    case "reset":
+    default:
+      return renderLayout({
+        title: "Identity Verification Reset",
+        badge: { tone: "amber", label: "Action required" },
+        heading: "Your identity verification was reset",
+        bodyHtml: `
+          <p class="lead">Hi ${safeName}, an administrator reset your identity verification.</p>
+          ${noteBox("Note from compliance:", note)}
+          <p>Please start a new verification session from your dashboard to continue onboarding.</p>`,
+        cta: { label: "Start Verification", path: "/dashboard?tab=ai-work" },
+        footerHtml: `Revive AI &bull; Contributor Compliance`,
+      });
+  }
+}
+
+/**
+ * Sent when a contributor fails a screening assessment.
+ */
+export function assessmentFailedEmail(name: string, score: number, threshold: number): string {
+  return renderLayout({
+    title: "Assessment Result",
+    badge: { tone: "amber", label: `Score: ${score}% (pass mark ${threshold}%)` },
+    heading: "Almost there — you can retry your assessment",
+    bodyHtml: `
+      <p class="lead">Hi ${escapeHtml(name)}, your screening assessment scored ${score}%, below the ${threshold}% pass mark.</p>
+      <div class="note-box">
+        <strong style="display: block; margin-bottom: 4px; color: #0F766E;">Tips for your next attempt:</strong>
+        &bull; Re-read the evaluation rubric before starting.<br>
+        &bull; Compare both responses for factual accuracy, not just style.<br>
+        &bull; Give a specific, evidence-based justification for your preference.
+      </div>`,
+    cta: { label: "Retry Assessment", path: "/dashboard?tab=ai-work" },
+    footerHtml: `Revive AI &bull; Contributor Onboarding`,
+  });
+}
+
+/**
+ * Sent when a contributor's profile is missing details (bio, skills, etc.).
+ */
+export function profileDetailsReminderEmail(
+  name: string,
+  percentComplete: number,
+  missingLabels: string[]
+): string {
+  return renderLayout({
+    title: "Complete Your Profile",
+    badge: { tone: "amber", label: `Profile ${percentComplete}% complete` },
+    heading: "Stand out to project leads",
+    bodyHtml: `
+      <p class="lead">Hi ${escapeHtml(name)}, project leads match contributors to new work using their profiles.</p>
+      <p>A few quick additions will improve your chances of being selected:</p>
+      <div class="note-box">${missingLabels.map((l) => `&bull; ${escapeHtml(l)}`).join("<br>")}</div>`,
+    cta: { label: "Update My Profile", path: "/profile" },
+    footerHtml: `Revive AI &bull; Contributor Operations`,
+  });
+}
+
+/**
+ * Sent when an admin opens a new task for applications.
+ */
+export function newTaskAvailableEmail(
+  name: string,
+  task: { title: string; summary: string; payLabel: string | null; slug: string }
+): string {
+  return renderLayout({
+    title: "New Task Open",
+    badge: { tone: "teal", label: "New opportunity" },
+    heading: escapeHtml(task.title),
+    bodyHtml: `
+      <p class="lead">Hi ${escapeHtml(name)}, a new AI evaluation task just opened for applications.</p>
+      <div style="border: 1px solid #D3E2DE; border-radius: 10px; padding: 16px; margin: 20px 0; background-color: #F7FAF9;">
+        <strong style="color: #0B2B2B; font-size: 15px;">${escapeHtml(task.title)}</strong>
+        ${task.payLabel ? `<span style="color: #0F766E; font-weight: 700; font-size: 13px;"> &bull; ${escapeHtml(task.payLabel)}</span>` : ""}
+        <p style="margin: 6px 0 0; font-size: 13px; color: #5B7773;">${escapeHtml(task.summary)}</p>
+      </div>
+      <p>Slots are limited and the waitlist is filled in order of application.</p>`,
+    cta: { label: "View &amp; Apply", path: `/tasks/${encodeURIComponent(task.slug)}` },
+    footerHtml: `Revive AI &bull; Project Matching &amp; Allocations`,
+  });
 }

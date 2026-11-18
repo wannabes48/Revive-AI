@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/server";
-import { notifyOnboardingProgress } from "@/lib/emails/automation";
+import { createInAppNotification, notifyKycEvent } from "@/lib/emails/automation";
 
 function canonicalizeJson(obj: any): string {
   if (obj === null || typeof obj !== "object") {
@@ -236,8 +236,23 @@ export async function POST(req: NextRequest) {
       fellowStatus = "failed";
     }
 
-    // 8. Update user records safely (isolated queries so missing optional columns never block kyc_status)
+    // 8. Respect manual admin decisions: when an admin has locked this user's KYC,
+    //    the webhook is still audited (step 9) but must not change their status.
+    let kycLocked = false;
     if (userId) {
+      const { data: lockRow, error: lockErr } = await adminClient
+        .from("profiles")
+        .select("kyc_locked")
+        .eq("id", userId)
+        .maybeSingle();
+      if (lockErr) {
+        console.warn("Could not read kyc_locked (is migration 009 applied?):", lockErr);
+      }
+      kycLocked = Boolean((lockRow as { kyc_locked?: boolean } | null)?.kyc_locked);
+    }
+
+    // Update user records safely (isolated queries so missing optional columns never block kyc_status)
+    if (userId && !kycLocked) {
       // A. Auth user metadata
       await adminClient.auth.admin
         .updateUserById(userId, {
@@ -297,25 +312,27 @@ export async function POST(req: NextRequest) {
         console.warn("Onboarding progress upsert warning:", onboardingProgressErr);
       }
 
-      // E. In-app notification & automated email on approval
+      // E. In-app notification & automated email for every decisive outcome.
+      //    Deduplicated per session, so Didit retries never double-send.
       if (kycStatus === "verified") {
-        const { data: profile } = await adminClient
-          .from("profiles")
-          .select("email, full_name")
-          .eq("id", userId)
-          .maybeSingle();
-
-        if (profile?.email) {
-          await notifyOnboardingProgress({
-            userId,
-            email: profile.email,
-            name: profile.full_name || "Contributor",
-            stepKey: "step_1_kyc_approved",
-            completedStepLabel: "Identity Verification (KYC)",
-            nextStepLabel: "Payments and Tax Setup (5m)",
-            progressPercent: 17,
-          });
-        }
+        await createInAppNotification(userId, {
+          type: "kyc_update",
+          title: "Identity Verified",
+          body: "Your identity verification has been approved. Continue to Payments & Tax setup.",
+          href: "/dashboard?tab=ai-work",
+        });
+        await notifyKycEvent(userId, "approved", { referenceId: sessionId });
+      } else if (kycStatus === "rejected") {
+        await createInAppNotification(userId, {
+          type: "kyc_update",
+          title: "Identity Verification Declined",
+          body: "Your identity verification was declined. Check your email for details and retry from your dashboard.",
+          href: "/dashboard?tab=ai-work",
+        });
+        // Raw provider warnings (AML/sanctions hits, risk scores) stay internal — not emailed.
+        await notifyKycEvent(userId, "rejected", { referenceId: sessionId });
+      } else if (kycStatus === "pending" && lowerStatus !== "in progress" && lowerStatus !== "in_progress") {
+        await notifyKycEvent(userId, "submitted", { referenceId: sessionId });
       }
     }
 
@@ -351,6 +368,7 @@ export async function POST(req: NextRequest) {
         session_id: sessionId,
         status: kycStatus,
         userIdResolved: Boolean(userId),
+        lockedByAdmin: kycLocked,
       },
       { status: 200 }
     );

@@ -50,7 +50,10 @@ import {
   Sparkles,
   Zap,
   Check,
+  Lock,
+  SlidersHorizontal,
 } from "lucide-react";
+import { KycControlDialog, type KycControlTarget } from "@/components/admin/kyc-control-dialog";
 
 interface UserDetailsDrawerProps {
   user: UserProfileRow | null;
@@ -102,6 +105,7 @@ export function UserDetailsDrawer({
   // Delete user loading
   const [deletingUser, setDeletingUser] = React.useState(false);
   const [approvalLoading, setApprovalLoading] = React.useState(false);
+  const [kycTarget, setKycTarget] = React.useState<KycControlTarget | null>(null);
 
   const handleApproveAdmission = async () => {
     if (!user) return;
@@ -499,6 +503,51 @@ export function UserDetailsDrawer({
                     </div>
                   </div>
                 )}
+
+                {/* Identity verification (KYC) — manual control */}
+                <div className="p-4 rounded-xl border border-border bg-muted/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <Shield className="h-5 w-5 text-[#0F766E] shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold font-heading text-foreground flex items-center gap-1.5">
+                        Identity Verification (KYC)
+                        {user.kyc_locked && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-[#0F766E]/10 text-[#0F766E]">
+                            <Lock className="h-3 w-3" />
+                            Locked
+                          </span>
+                        )}
+                      </h4>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 capitalize">
+                        Status: {(user.kyc_status || "unverified").replace(/_/g, " ")}
+                        {user.kyc_verified_at ? ` · verified ${formatDate(user.kyc_verified_at)}` : ""}
+                      </p>
+                      {user.kyc_admin_note && (
+                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                          Admin note: {user.kyc_admin_note}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setKycTarget({
+                        userId: user.id,
+                        name: displayName,
+                        email: user.email,
+                        kycStatus: user.kyc_status,
+                        kycLocked: user.kyc_locked,
+                        verificationId: null,
+                      })
+                    }
+                    className="rounded-full text-xs font-semibold h-8 px-4 gap-1.5 shrink-0"
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    Manage KYC
+                  </Button>
+                </div>
 
                 {/* Contact & Geography Bento */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1112,6 +1161,12 @@ export function UserDetailsDrawer({
           </div>
         </div>
       </div>
+
+      <KycControlDialog
+        target={kycTarget}
+        onClose={() => setKycTarget(null)}
+        onDone={() => onUserUpdated?.()}
+      />
     </div>
   );
 }

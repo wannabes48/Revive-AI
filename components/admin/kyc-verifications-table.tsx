@@ -10,10 +10,11 @@ import { Input } from "@/components/ui/input";
 import { ResponsiveDialog } from "@/components/ui/responsive-dialog";
 import { ResponsiveTable, type ColumnDef } from "@/components/ui/responsive-table";
 import {
-  adminOverrideKycStatus,
-  adminResetKyc,
+  adminSetKycStatus,
   adminDeleteKycVerification,
+  type AdminKycDecision,
 } from "@/actions/admin-kyc";
+import { KycControlDialog, type KycControlTarget } from "@/components/admin/kyc-control-dialog";
 import {
   ShieldCheck,
   ShieldAlert,
@@ -32,9 +33,11 @@ import {
   Globe,
   FileText,
   Activity,
-  RotateCcw,
   Shield,
   Fingerprint,
+  SlidersHorizontal,
+  Lock,
+  UserCog,
 } from "lucide-react";
 
 export interface KycVerificationRow {
@@ -66,14 +69,24 @@ export interface KycVerificationRow {
     full_name?: string | null;
     avatar_url?: string | null;
     kyc_status?: string | null;
+    kyc_locked?: boolean | null;
   } | null;
+}
+
+export interface KycContributorOption {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  kyc_status?: string | null;
+  kyc_locked?: boolean | null;
 }
 
 interface KycVerificationsTableProps {
   verifications: KycVerificationRow[];
+  contributors?: KycContributorOption[];
 }
 
-export function KycVerificationsTable({ verifications }: KycVerificationsTableProps) {
+export function KycVerificationsTable({ verifications, contributors = [] }: KycVerificationsTableProps) {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<string>("all");
@@ -82,6 +95,49 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
 
   // Inspector Dialog state
   const [inspectRow, setInspectRow] = React.useState<KycVerificationRow | null>(null);
+
+  // Manual KYC control dialog state
+  const [controlTarget, setControlTarget] = React.useState<KycControlTarget | null>(null);
+  const [controlDecision, setControlDecision] = React.useState<AdminKycDecision | undefined>();
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pickerQuery, setPickerQuery] = React.useState("");
+
+  const openControl = (row: KycVerificationRow, decision?: AdminKycDecision) => {
+    setControlDecision(decision);
+    setControlTarget({
+      userId: row.user_id,
+      name: row.profile?.full_name || row.profile?.email?.split("@")[0] || "Contributor",
+      email: row.profile?.email,
+      kycStatus: row.profile?.kyc_status || row.status,
+      kycLocked: row.profile?.kyc_locked,
+      verificationId: row.id,
+    });
+  };
+
+  const openControlForContributor = (c: KycContributorOption) => {
+    setPickerOpen(false);
+    setPickerQuery("");
+    setControlDecision(undefined);
+    setControlTarget({
+      userId: c.id,
+      name: c.full_name || c.email.split("@")[0],
+      email: c.email,
+      kycStatus: c.kyc_status,
+      kycLocked: c.kyc_locked,
+      verificationId: null,
+    });
+  };
+
+  const pickerResults = React.useMemo(() => {
+    const q = pickerQuery.toLowerCase().trim();
+    const list = q
+      ? contributors.filter(
+          (c) =>
+            c.email.toLowerCase().includes(q) || (c.full_name || "").toLowerCase().includes(q)
+        )
+      : contributors;
+    return list.slice(0, 8);
+  }, [contributors, pickerQuery]);
 
   const copyToClipboard = async (text: string, id: string) => {
     try {
@@ -94,36 +150,19 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
     }
   };
 
-  const handleStatusChange = async (
-    row: KycVerificationRow,
-    newStatus: "verified" | "pending" | "in_progress" | "rejected" | "expired" | "resubmitted"
-  ) => {
+  // One-click approve (notifies the contributor; lock state unchanged).
+  const handleQuickApprove = async (row: KycVerificationRow) => {
     setLoadingId(row.id);
-    const res = await adminOverrideKycStatus(row.id, row.user_id, newStatus);
+    const res = await adminSetKycStatus({
+      userId: row.user_id,
+      verificationId: row.id,
+      decision: "verified",
+    });
     setLoadingId(null);
     if (res.error) {
       toast.error(res.error);
     } else {
-      toast.success(res.message || `KYC status updated to ${newStatus}.`);
-      router.refresh();
-    }
-  };
-
-  const handleReset = async (row: KycVerificationRow) => {
-    if (
-      !confirm(
-        `Reset KYC verification for fellow ${row.profile?.full_name || row.profile?.email || row.user_id}? This will prompt them to restart verification.`
-      )
-    ) {
-      return;
-    }
-    setLoadingId(row.id);
-    const res = await adminResetKyc(row.user_id);
-    setLoadingId(null);
-    if (res.error) {
-      toast.error(res.error);
-    } else {
-      toast.success(res.message || "KYC session reset.");
+      toast.success(res.message || "KYC approved.");
       router.refresh();
     }
   };
@@ -268,6 +307,70 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
             {declinedCount} declined • {expiredCount} expired
           </span>
         </div>
+      </div>
+
+      {/* Manual KYC control for any contributor (including ones with no session yet) */}
+      <div className="p-3 sm:p-4 rounded-2xl border border-border bg-card shadow-2xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <UserCog className="h-4 w-4 mt-0.5 text-[#0F766E] shrink-0" />
+            <div>
+              <h3 className="text-xs font-bold text-foreground">Manual KYC control</h3>
+              <p className="text-[11px] text-muted-foreground">
+                Approve, decline, request resubmission or reset any contributor&apos;s KYC, even if
+                they haven&apos;t started a Didit session.
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setPickerOpen((v) => !v)}
+            className="h-8 text-xs font-semibold rounded-lg gap-1.5 shrink-0"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            {pickerOpen ? "Close" : "Find contributor"}
+          </Button>
+        </div>
+        {pickerOpen && (
+          <div className="space-y-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                autoFocus
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder="Search contributors by name or email..."
+                className="pl-9 h-9 text-xs rounded-xl"
+              />
+            </div>
+            <ul className="divide-y divide-border rounded-xl border border-border overflow-hidden">
+              {pickerResults.length === 0 && (
+                <li className="p-3 text-[11px] text-muted-foreground">No contributors match.</li>
+              )}
+              {pickerResults.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => openControlForContributor(c)}
+                    className="w-full flex items-center justify-between gap-3 p-2.5 text-left hover:bg-muted/40 cursor-pointer"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-xs font-semibold text-foreground truncate">
+                        {c.full_name || c.email.split("@")[0]}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground truncate">{c.email}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 shrink-0 text-[10px] font-bold uppercase text-muted-foreground">
+                      {c.kyc_locked && <Lock className="h-3 w-3 text-[#0F766E]" />}
+                      {(c.kyc_status || "unverified").replace(/_/g, " ")}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* 2. Controls & Search Filter Bar */}
@@ -530,7 +633,7 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
                     <Button
                       size="sm"
                       disabled={isLoading}
-                      onClick={() => handleStatusChange(row, "verified")}
+                      onClick={() => handleQuickApprove(row)}
                       className="h-8 text-xs font-bold bg-[#0F766E] hover:bg-[#0F766E]/90 text-white rounded-lg gap-1 cursor-pointer"
                     >
                       {isLoading ? (
@@ -548,26 +651,28 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
                       size="sm"
                       variant="outline"
                       disabled={isLoading}
-                      onClick={() => handleStatusChange(row, "rejected")}
+                      onClick={() => openControl(row, "rejected")}
                       className="h-8 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200 dark:border-rose-900/50 rounded-lg cursor-pointer"
                     >
                       <span>Reject</span>
                     </Button>
                   )}
 
-                  {/* Reset Session */}
+                  {/* Full manual control (all decisions, notes, lock) */}
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={isLoading}
-                    onClick={() => handleReset(row)}
-                    className="h-8 px-2 text-xs text-muted-foreground hover:text-amber-700 hover:bg-amber-50 rounded-lg"
-                    title="Reset KYC Session so fellow can re-verify"
+                    onClick={() => openControl(row)}
+                    className="h-8 px-2 text-xs text-muted-foreground hover:text-[#0F766E] rounded-lg gap-1"
+                    title="Manual KYC control: approve, decline, request resubmission, reset, lock"
                   >
-                    <RotateCcw className="h-3.5 w-3.5" />
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    {row.profile?.kyc_locked && <Lock className="h-3 w-3 text-[#0F766E]" />}
                   </Button>
 
                   {/* Delete Audit Record */}
+                  {!row.id.startsWith("profile_kyc_") && (
                   <button
                     onClick={() => handleDelete(row)}
                     className="p-1.5 text-muted-foreground hover:text-rose-600 rounded-md transition-colors cursor-pointer"
@@ -575,6 +680,7 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
+                  )}
                 </div>
               );
             },
@@ -765,10 +871,15 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => handleReset(inspectRow)}
-                className="rounded-lg text-xs text-amber-700 border-amber-300 hover:bg-amber-50"
+                onClick={() => {
+                  const row = inspectRow;
+                  setInspectRow(null);
+                  openControl(row);
+                }}
+                className="rounded-lg text-xs gap-1.5"
               >
-                Reset Verification
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                Manual control
               </Button>
 
               <div className="flex items-center gap-2">
@@ -784,7 +895,7 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
                   <Button
                     size="sm"
                     onClick={() => {
-                      handleStatusChange(inspectRow, "verified");
+                      handleQuickApprove(inspectRow);
                       setInspectRow(null);
                     }}
                     className="rounded-lg text-xs font-bold bg-[#0F766E] hover:bg-[#0F766E]/90 text-white"
@@ -797,6 +908,12 @@ export function KycVerificationsTable({ verifications }: KycVerificationsTablePr
           </div>
         )}
       </ResponsiveDialog>
+
+      <KycControlDialog
+        target={controlTarget}
+        initialDecision={controlDecision}
+        onClose={() => setControlTarget(null)}
+      />
     </div>
   );
 }

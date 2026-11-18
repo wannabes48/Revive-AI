@@ -11,7 +11,7 @@ import {
   resetPasswordSchema,
 } from "@/lib/validators";
 import { sendEmail } from "@/lib/emails/resend";
-import { welcomeEmail } from "@/lib/emails/templates";
+import { waitlistWelcomeEmail } from "@/lib/emails/templates";
 
 async function getOrigin() {
   const headerList = await headers();
@@ -91,8 +91,8 @@ export async function signUpAction(formData: FormData): Promise<ActionResponse> 
   try {
     await sendEmail({
       to: validEmail,
-      subject: "Welcome to Revive AI — Expert Tasking Platform",
-      html: welcomeEmail(validFullName),
+      subject: "Welcome to Revive AI — you're on the waitlist",
+      html: waitlistWelcomeEmail(validFullName),
     });
   } catch (err) {
     console.error("Welcome email failed to dispatch:", err);

@@ -28,6 +28,15 @@ export interface ExperienceItem {
   summary?: string;
 }
 
+export type KycStatus =
+  | "unverified"
+  | "pending"
+  | "in_progress"
+  | "verified"
+  | "rejected"
+  | "expired"
+  | "abandoned";
+
 export interface Profile {
   id: string;
   email: string;
@@ -37,7 +46,12 @@ export interface Profile {
   bio: string | null;
   role: UserRole;
   approval_status?: "waitlisted" | "approved" | "rejected";
-  kyc_status?: "unverified" | "pending" | "verified" | "rejected";
+  kyc_status?: KycStatus;
+  kyc_locked?: boolean;
+  kyc_reviewed_by?: string | null;
+  kyc_reviewed_at?: string | null;
+  kyc_admin_note?: string | null;
+  approved_at?: string | null;
   didit_session_id?: string | null;
   has_completed_tour?: boolean;
   kyc_verified_at?: string | null;

@@ -4,6 +4,20 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { taskSchema } from "@/lib/validators";
 import { TaskStatus } from "@/lib/supabase/types";
+import { after } from "next/server";
+import { notifyTaskOpened } from "@/lib/emails/automation";
+
+/** Email admitted contributors once the response is sent (deduplicated per task). */
+function scheduleTaskOpenedAlert(taskId: string) {
+  after(async () => {
+    try {
+      const sent = await notifyTaskOpened(taskId);
+      if (sent > 0) console.log(`[Email Automation] Task ${taskId} open alert sent to ${sent} contributors.`);
+    } catch (err) {
+      console.error("[Email Automation] Task open alert failed:", err);
+    }
+  });
+}
 
 export type TaskActionResult = {
   success?: boolean;
@@ -90,6 +104,8 @@ export async function createTask(formData: FormData): Promise<TaskActionResult> 
   revalidatePath("/tasks");
   revalidatePath("/");
 
+  if (parsed.data.status === "open") scheduleTaskOpenedAlert(data.id);
+
   return { success: true, taskId: data.id };
 }
 
@@ -174,6 +190,8 @@ export async function updateTask(id: string, formData: FormData): Promise<TaskAc
   revalidatePath("/tasks");
   revalidatePath("/");
 
+  if (parsed.data.status === "open") scheduleTaskOpenedAlert(id);
+
   return { success: true, message: "Task successfully updated." };
 }
 
@@ -200,6 +218,8 @@ export async function setTaskStatus(id: string, status: TaskStatus): Promise<Tas
   revalidatePath("/admin/tasks");
   revalidatePath("/tasks");
   revalidatePath("/");
+
+  if (status === "open") scheduleTaskOpenedAlert(id);
 
   return { success: true, message: `Task status updated to ${status}.` };
 }

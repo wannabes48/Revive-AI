@@ -2,7 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
-import { notifyOnboardingProgress } from "@/lib/emails/automation";
+import {
+  notifyAssessmentFailed,
+  notifyKycEvent,
+  notifyOnboardingProgress,
+} from "@/lib/emails/automation";
 import { z } from "zod";
 
 const manualKycSchema = z.object({
@@ -172,6 +176,7 @@ export async function submitKycVerification(
   }
 
   revalidatePath("/dashboard");
+  await notifyKycEvent(user.id, "submitted", { referenceId: verification.id });
   return {
     success: true,
     verificationId: verification.id,
@@ -401,6 +406,16 @@ export async function submitAssessmentTask(
   revalidatePath("/dashboard");
 
   if (!passed) {
+    if (user.email) {
+      await notifyAssessmentFailed({
+        userId: user.id,
+        email: user.email,
+        name: user.user_metadata?.full_name || "Contributor",
+        stepId,
+        score: computedScore,
+        threshold: passingThreshold,
+      });
+    }
     return {
       error: `Assessment score ${computedScore}% was below the required passing threshold of ${passingThreshold}%. You may review guidelines and retry.`,
       score: computedScore,

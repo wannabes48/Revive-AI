@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
 import { UserRole } from "@/lib/supabase/types";
+import { notifyAccountApproved, notifyAccountRejected } from "@/lib/emails/automation";
 
 export type UserActionResult = {
   success?: boolean;
@@ -184,6 +185,15 @@ export async function approveUserAccount(userId: string): Promise<UserActionResu
     console.warn("Profiles table approval_status update notice:", err);
   }
 
+  // Admission timestamp is the baseline for reminder cadence (column from migration 009).
+  const { error: approvedAtError } = await createAdminClient()
+    .from("profiles")
+    .update({ approved_at: new Date().toISOString() })
+    .eq("id", userId);
+  if (approvedAtError) {
+    console.warn("Could not record approved_at (is migration 009 applied?):", approvedAtError);
+  }
+
   try {
     await supabase.from("notifications").insert({
       user_id: userId,
@@ -195,6 +205,8 @@ export async function approveUserAccount(userId: string): Promise<UserActionResu
   } catch {
     // Non-fatal
   }
+
+  await notifyAccountApproved(userId);
 
   revalidatePath("/admin/users");
   revalidatePath("/admin");
@@ -242,40 +254,11 @@ export async function rejectUserAccount(
     // Non-fatal
   }
 
+  await notifyAccountRejected(userId, reason);
+
   revalidatePath("/admin/users");
   revalidatePath("/admin");
   revalidatePath("/waitlist");
 
   return { success: true, message: "User account status updated to rejected." };
-}
-
-export async function updateUserKycStatus(
-  userId: string,
-  kycStatus: "unverified" | "pending" | "verified" | "rejected"
-): Promise<UserActionResult> {
-  const { supabase } = await requireAdmin();
-
-  try {
-    const adminClient = createAdminClient();
-    await adminClient.auth.admin.updateUserById(userId, {
-      user_metadata: { kyc_status: kycStatus },
-    });
-  } catch (err) {
-    console.warn("Failed to update user_metadata in auth:", err);
-  }
-
-  try {
-    await supabase
-      .from("profiles")
-      .update({ kyc_status: kycStatus })
-      .eq("id", userId);
-  } catch (err) {
-    console.warn("Profiles table kyc_status update notice:", err);
-  }
-
-  revalidatePath("/admin/users");
-  revalidatePath("/admin");
-  revalidatePath("/dashboard");
-
-  return { success: true, message: `KYC verification status updated to ${kycStatus}.` };
 }

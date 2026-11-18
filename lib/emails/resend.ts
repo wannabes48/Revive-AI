@@ -72,3 +72,53 @@ export async function sendEmail({
 
 // Alias for explicit safe naming
 export const sendEmailSafe = sendEmail;
+
+function isResendConfigured(): boolean {
+  const key = process.env.RESEND_API_KEY;
+  return Boolean(key && key.trim() !== "" && !key.includes("placeholder"));
+}
+
+const BATCH_LIMIT = 100; // Resend batch API maximum per request
+
+/**
+ * Sends many emails using Resend's batch API (100 per request), which avoids
+ * the per-second rate limit hit by looping over sendEmail. Never throws.
+ * Returns, per input index, whether that email was accepted.
+ */
+export async function sendEmailBatch(emails: SendEmailOptions[]): Promise<boolean[]> {
+  const results: boolean[] = new Array(emails.length).fill(false);
+
+  for (let start = 0; start < emails.length; start += BATCH_LIMIT) {
+    const chunk = emails.slice(start, start + BATCH_LIMIT);
+    try {
+      if (!isResendConfigured()) {
+        for (const email of chunk) {
+          console.log(
+            `[Dev Email Mock] To: ${email.to} | Subject: ${email.subject} | Time: ${new Date().toISOString()}`
+          );
+        }
+        chunk.forEach((_, i) => (results[start + i] = true));
+        continue;
+      }
+
+      const { error } = await resend.batch.send(
+        chunk.map((email) => ({
+          from: defaultSender,
+          to: email.to,
+          subject: email.subject,
+          html: email.html,
+        }))
+      );
+
+      if (error) {
+        console.error("[Email Service] Resend batch error:", error);
+        continue;
+      }
+      chunk.forEach((_, i) => (results[start + i] = true));
+    } catch (err) {
+      console.error("[Email Service] Unexpected batch dispatch error:", err);
+    }
+  }
+
+  return results;
+}

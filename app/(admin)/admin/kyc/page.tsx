@@ -1,5 +1,9 @@
 import { requireAdmin } from "@/lib/auth";
-import { KycVerificationsTable, KycVerificationRow } from "@/components/admin/kyc-verifications-table";
+import {
+  KycVerificationsTable,
+  KycVerificationRow,
+  type KycContributorOption,
+} from "@/components/admin/kyc-verifications-table";
 import { ShieldCheck } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +71,31 @@ export default async function AdminKycPage() {
     console.warn("Could not backfill profile KYC records:", err);
   }
 
+  // 3. Contributor directory for manual KYC control + admin lock flags.
+  //    select("*") so this keeps working before migration 009 adds kyc_locked.
+  let contributors: KycContributorOption[] = [];
+  try {
+    const { data } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("role", "user")
+      .order("created_at", { ascending: false });
+    type ContributorRow = Omit<KycContributorOption, "kyc_locked"> & { kyc_locked?: boolean | null };
+    contributors = ((data || []) as ContributorRow[]).map((p) => ({
+      id: p.id,
+      email: p.email,
+      full_name: p.full_name,
+      kyc_status: p.kyc_status,
+      kyc_locked: Boolean(p.kyc_locked),
+    }));
+    const lockMap = new Map(contributors.map((c) => [c.id, c.kyc_locked]));
+    verifications = verifications.map((v) =>
+      v.profile ? { ...v, profile: { ...v.profile, kyc_locked: lockMap.get(v.user_id) ?? false } } : v
+    );
+  } catch (err) {
+    console.warn("Could not load contributors for manual KYC control:", err);
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-6">
       {/* Header */}
@@ -87,7 +116,7 @@ export default async function AdminKycPage() {
         </div>
       </div>
 
-      <KycVerificationsTable verifications={verifications} />
+      <KycVerificationsTable verifications={verifications} contributors={contributors} />
     </div>
   );
 }
