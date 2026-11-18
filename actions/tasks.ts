@@ -77,6 +77,8 @@ export async function createTask(formData: FormData): Promise<TaskActionResult> 
     claim_minutes: Number(formData.get("claim_minutes")) || 60,
     max_open_claims: Number(formData.get("max_open_claims")) || 1,
     budget_cents: budgetCents,
+    max_credited_seconds_per_item: Math.round((Number(formData.get("max_credited_minutes")) || 30) * 60),
+    auto_approve_hourly: formData.get("auto_approve_hourly") !== "false",
   };
 
   const parsed = taskSchema.safeParse(rawData);
@@ -162,6 +164,8 @@ export async function updateTask(id: string, formData: FormData): Promise<TaskAc
     claim_minutes: Number(formData.get("claim_minutes")) || 60,
     max_open_claims: Number(formData.get("max_open_claims")) || 1,
     budget_cents: budgetCents,
+    max_credited_seconds_per_item: Math.round((Number(formData.get("max_credited_minutes")) || 30) * 60),
+    auto_approve_hourly: formData.get("auto_approve_hourly") !== "false",
   };
 
   const parsed = taskSchema.safeParse(rawData);

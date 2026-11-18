@@ -76,8 +76,8 @@ const NAV_SECTIONS: NavSection[] = [
         icon: ClipboardCheck,
       },
       {
-        label: "Timesheets",
-        href: "/admin/timesheets",
+        label: "Live Work",
+        href: "/admin/live",
         exact: false,
         icon: Clock,
       },

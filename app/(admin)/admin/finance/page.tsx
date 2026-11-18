@@ -80,10 +80,23 @@ export default async function AdminFinancePage() {
     .select("task_id, earning_cents")
     .eq("status", "approved");
 
+  // Archived self-logged timesheets (before the work clock) still count as spend
   const { data: approvedTimeEntries } = await supabase
     .from("time_entries")
     .select("task_id, earning_cents")
     .eq("status", "approved");
+
+  // Hourly pay per completed hour: ledger entries keyed by application
+  const [{ data: hourLedger }, { data: hourApps }] = await Promise.all([
+    supabase.from("ledger_entries").select("ref_id, amount_cents").eq("ref_type", "hour"),
+    supabase.from("applications").select("id, task_id"),
+  ]);
+  const taskByApp = new Map((hourApps || []).map((a: { id: string; task_id: string }) => [a.id, a.task_id]));
+  const hourSpendByTask = new Map<string, number>();
+  for (const h of hourLedger || []) {
+    const taskId = taskByApp.get(h.ref_id as string);
+    if (taskId) hourSpendByTask.set(taskId, (hourSpendByTask.get(taskId) || 0) + Number(h.amount_cents));
+  }
 
   const taskSpends: TaskSpendMetric[] = (tasks || []).map((t: any) => {
     const taskSubs = (approvedSubmissions || []).filter((s: any) => s.task_id === t.id);
@@ -91,7 +104,7 @@ export default async function AdminFinancePage() {
 
     const subSpend = taskSubs.reduce((acc: number, s: any) => acc + (s.earning_cents || 0), 0);
     const timeSpend = taskTimes.reduce((acc: number, te: any) => acc + (te.earning_cents || 0), 0);
-    const totalSpentCents = subSpend + timeSpend;
+    const totalSpentCents = subSpend + timeSpend + (hourSpendByTask.get(t.id) || 0);
     const approvedCount = taskSubs.length;
     const costPerApprovedItemCents = approvedCount > 0 ? Math.round(totalSpentCents / approvedCount) : null;
 

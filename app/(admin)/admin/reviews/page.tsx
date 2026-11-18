@@ -31,7 +31,9 @@ export default async function AdminReviewsPage() {
         title,
         category,
         rate_cents,
-        item_schema
+        item_schema,
+        pay_model,
+        max_credited_seconds_per_item
       ),
       profile:profiles!submissions_user_id_fkey (
         id,
@@ -93,12 +95,34 @@ export default async function AdminReviewsPage() {
     }
   }
 
+  // Median time per task (from approved work) for the pace check
+  const taskIds = Array.from(new Set(rawSubmissions.map((s: any) => s.task_id)));
+  const medianByTask: Record<string, number | null> = {};
+  if (taskIds.length > 0) {
+    const { data: timed } = await supabase
+      .from("submissions")
+      .select("task_id, seconds_spent")
+      .in("task_id", taskIds)
+      .eq("status", "approved")
+      .gt("seconds_spent", 0)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    for (const id of taskIds) {
+      const values = (timed || [])
+        .filter((t) => t.task_id === id)
+        .map((t) => Number(t.seconds_spent))
+        .sort((a, b) => a - b);
+      medianByTask[id] = values.length >= 5 ? values[Math.floor(values.length / 2)] : null;
+    }
+  }
+
   // Enrich submissions with stats
   const enrichedSubmissions: ReviewQueueSubmission[] = rawSubmissions.map((s: any) => ({
     ...s,
     task: s.task || s.tasks,
     profile: s.profile || s.profiles,
     work_item: s.work_item || s.work_items,
+    taskMedianSeconds: medianByTask[s.task_id] ?? null,
     contributorStats: contributorStatsMap[s.user_id] || {
       approvedCount: 0,
       totalReviewed: 0,

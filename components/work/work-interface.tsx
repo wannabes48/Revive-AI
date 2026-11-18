@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, WorkItem } from "@/lib/supabase/types";
 import { Field } from "@/lib/item-schema";
-import { submitWork, releaseItem, startNextItem } from "@/actions/work";
+import { submitWork, releaseItem, startWorking, stopWorking, confirmPresence } from "@/actions/work";
+import { useWorkClock, formatClock } from "@/hooks/use-work-clock";
 import { formatCents } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,9 @@ import {
   Star,
   ChevronDown,
   ChevronUp,
+  Square,
+  Hand,
+  PauseCircle,
 } from "lucide-react";
 
 interface WorkInterfaceProps {
@@ -40,6 +44,19 @@ interface WorkInterfaceProps {
 
 export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
   const router = useRouter();
+  const isHourly = task.pay_model === "hourly";
+  const autoCredit = isHourly && task.auto_approve_hourly !== false;
+  const clock = useWorkClock(item.id);
+  const [stopping, setStopping] = React.useState(false);
+  const [confirming, setConfirming] = React.useState(false);
+
+  // The claim was lost (expired and re-claimed, or released by an admin).
+  React.useEffect(() => {
+    if (clock.paused === "lost_claim") {
+      toast.error("This task is no longer assigned to you.");
+      router.push(`/work/${task.slug}`);
+    }
+  }, [clock.paused, router, task.slug]);
 
   const fields: Field[] = Array.isArray(task.item_schema) ? task.item_schema : [];
   const draftKey = `draft:${item.id}`;
@@ -62,19 +79,6 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
   const [releasing, setReleasing] = React.useState(false);
   const [successModal, setSuccessModal] = React.useState(false);
   const [claimingNext, setClaimingNext] = React.useState(false);
-
-  // Time on item counter (visible tab only)
-  const [secondsSpent, setSecondsSpent] = React.useState(0);
-
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      if (document.visibilityState === "visible") {
-        setSecondsSpent((s) => s + 1);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   // Draft auto-save to localStorage
   React.useEffect(() => {
@@ -150,7 +154,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
     }
 
     setSubmitting(true);
-    const res = await submitWork(task.id, item.id, answers, secondsSpent);
+    const res = await submitWork(task.id, item.id, answers);
     setSubmitting(false);
 
     if (res.error) {
@@ -164,7 +168,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         localStorage.removeItem(draftKey);
       } catch (err) {}
 
-      toast.success("Work submitted for review!");
+      toast.success(autoCredit ? "Work submitted. Your time has been credited." : "Work submitted for review!");
       setSuccessModal(true);
     }
   }
@@ -184,11 +188,15 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
   // Next Item Handler from modal
   async function handleNextItem() {
     setClaimingNext(true);
-    const res = await startNextItem(task.id, task.slug);
+    const res = await startWorking(task.id, task.slug, isHourly);
     setClaimingNext(false);
 
     if (res?.empty) {
-      toast.error("Queue Empty", { description: "No tasks available right now. Check back soon." });
+      toast.error("No tasks right now", {
+        description: isHourly
+          ? "The queue is empty, so your clock has been stopped. Check back soon."
+          : "No tasks available right now. Check back soon.",
+      });
       router.push(`/work/${task.slug}`);
     } else if (res?.error) {
       toast.error("Could not start the next task", { description: res.error });
@@ -196,32 +204,136 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
     }
   }
 
+  async function handleStop() {
+    if (!confirm("Stop the work clock? The task you're holding goes back to the queue.")) return;
+    setStopping(true);
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {}
+    await stopWorking(task.slug);
+  }
+
+  async function handleConfirmPresence() {
+    setConfirming(true);
+    const res = await confirmPresence();
+    setConfirming(false);
+    if (res?.error) {
+      toast.error(res.error);
+      return;
+    }
+    clock.resync();
+  }
+
+  const clockState: { label: string; tone: "run" | "pause" | "stop" } =
+    clock.paused === null
+      ? { label: "Running", tone: "run" }
+      : clock.paused === "idle"
+      ? { label: "Paused: idle (move or type to resume)", tone: "pause" }
+      : clock.paused === "hidden"
+      ? { label: "Paused: tab hidden", tone: "pause" }
+      : clock.paused === "needs_presence"
+      ? { label: "Paused: still working?", tone: "pause" }
+      : clock.paused === "daily_cap"
+      ? { label: "Daily limit reached", tone: "stop" }
+      : { label: "Clock unavailable", tone: "stop" };
+
   return (
     <div className="space-y-4">
-      {/* Top Work Header */}
-      <div className="sticky top-16 z-30 bg-card/95 backdrop-blur-md border border-border rounded-[14px] p-3.5 sm:p-4 shadow-sm flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <Link
-            href={`/work/${task.slug}`}
-            className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors shrink-0"
-          >
-            ← Task Home
-          </Link>
-          <span className="text-muted-foreground/40">•</span>
-          <h2 className="font-heading font-bold text-sm sm:text-base text-foreground truncate">
-            {task.title}
-          </h2>
+      {/* Top Work Header: title + actions, then status chips on their own row */}
+      <div className="lg:sticky lg:top-16 z-30 bg-card/95 backdrop-blur-md border border-border rounded-[14px] shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-4 pt-3.5 pb-3">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <Link
+              href={`/work/${task.slug}`}
+              className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors shrink-0"
+            >
+              ← Task Home
+            </Link>
+            <span className="text-muted-foreground/40 shrink-0">•</span>
+            <h2 className="font-heading font-bold text-sm sm:text-base text-foreground truncate">
+              {task.title}
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setInstructionsOpen(true)}
+              className="rounded-full text-xs font-semibold gap-1.5 h-8 px-3"
+            >
+              <Info className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Instructions</span>
+            </Button>
+
+            {isHourly && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={stopping || submitting}
+                onClick={handleStop}
+                className="rounded-full text-xs font-semibold h-8 px-3 gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+              >
+                {stopping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
+                <span>Stop</span>
+              </Button>
+            )}
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={releasing || submitting}
+              onClick={handleRelease}
+              className="rounded-full text-xs font-semibold text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 px-3 gap-1.5"
+            >
+              {releasing ? <Loader2 className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
+              <span className="hidden sm:inline">Release</span>
+            </Button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
-          {/* Compensation Pill */}
-          <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-[#E5EFEC] text-[#0F766E] border border-[#0F766E]/20">
-            {formatCents(rateCents)} on approval
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-t border-border/60">
+          {/* Compensation */}
+          <span className="inline-flex items-center h-7 text-xs font-mono font-bold px-3 rounded-full bg-[#E5EFEC] text-[#0F766E] border border-[#0F766E]/20 whitespace-nowrap">
+            {isHourly ? `${formatCents(rateCents)} / completed hour` : `${formatCents(rateCents)} on approval`}
           </span>
 
-          {/* Countdown Clock */}
-          <div
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold border transition-colors ${
+          {/* Server work clock */}
+          <span
+            title={clockState.label}
+            className={`inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-mono font-bold border whitespace-nowrap ${
+              clockState.tone === "run"
+                ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/25"
+                : clockState.tone === "pause"
+                ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]"
+                : "bg-destructive/10 text-destructive border-destructive/20"
+            }`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                clockState.tone === "run"
+                  ? "bg-[#0F766E] animate-pulse"
+                  : clockState.tone === "pause"
+                  ? "bg-amber-500"
+                  : "bg-destructive"
+              }`}
+            />
+            {isHourly ? (
+              <span>
+                Today {formatClock(clock.sessionSeconds)} · Task {formatClock(clock.itemSeconds)}
+              </span>
+            ) : (
+              <span>Time {formatClock(clock.itemSeconds)}</span>
+            )}
+          </span>
+
+          {/* Claim hold countdown */}
+          <span
+            title="Time left before this task returns to the queue"
+            className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-xs font-mono font-bold border whitespace-nowrap transition-colors ${
               isExpired
                 ? "bg-destructive/10 text-destructive border-destructive/20"
                 : isUrgent
@@ -229,36 +341,33 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
                 : "bg-muted text-muted-foreground border-border"
             }`}
           >
-            <Clock className="h-3.5 w-3.5" />
-            <span>{formatCountdown(timeLeftMs)}</span>
-          </div>
-
-          {/* Instructions Button */}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setInstructionsOpen(true)}
-            className="rounded-full text-xs font-semibold gap-1.5 h-8 px-3"
-          >
-            <Info className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Instructions</span>
-          </Button>
-
-          {/* Release Button */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={releasing || submitting}
-            onClick={handleRelease}
-            className="rounded-full text-xs font-semibold text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 px-3"
-          >
-            {releasing ? <Loader2 className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
-            <span className="hidden sm:inline">Release</span>
-          </Button>
+            <Clock className="h-3.5 w-3.5 shrink-0" />
+            <span>Hold {formatCountdown(timeLeftMs)}</span>
+          </span>
         </div>
       </div>
+
+      {/* Clock pause banner */}
+      {clockState.tone !== "run" && clock.paused !== "needs_presence" && clock.paused !== "lost_claim" && (
+        <div
+          className={`flex items-center gap-2.5 p-3 rounded-xl text-xs border ${
+            clockState.tone === "pause"
+              ? "bg-[#FEF3C7] border-[#FDE68A] text-[#78350F]"
+              : "bg-destructive/10 border-destructive/20 text-destructive"
+          }`}
+        >
+          <PauseCircle className="h-4 w-4 shrink-0" />
+          <span>
+            {clock.paused === "idle"
+              ? "The clock is paused because there has been no activity for 3 minutes. Move the mouse or type to resume."
+              : clock.paused === "hidden"
+              ? "The clock is paused while this tab is hidden."
+              : clock.paused === "daily_cap"
+              ? "You have reached the 10-hour daily limit. Submit this task or stop for today; no more time will be counted."
+              : "We could not reach the work clock. Check your connection; time is not counted until it reconnects."}
+          </span>
+        </div>
+      )}
 
       {/* Expired Warning Banner */}
       {isExpired && (
@@ -300,7 +409,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
       {/* 2-Column Split: Item Payload (Stacked first on mobile) & Answer Form */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
         {/* Left Column: The Item Payload (Stacked first on mobile, Sticky on desktop) */}
-        <div className="lg:col-span-7 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-36 max-h-[calc(100dvh-160px)] overflow-y-auto min-w-0 max-w-full">
+        <div className="lg:col-span-7 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-56 max-h-[calc(100dvh-15rem)] overflow-y-auto min-w-0 max-w-full">
           <div className="flex items-center justify-between pb-3 border-b border-border/60">
             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
               Task #{item.id.slice(0, 8)}
@@ -480,7 +589,7 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
             {/* Desktop-only in-form submit */}
             <div className="hidden lg:flex pt-3 border-t border-border/60 items-center justify-between gap-3">
               <span className="text-[11px] text-muted-foreground">
-                Active time: {Math.floor(secondsSpent / 60)}m {secondsSpent % 60}s
+                Counted time on this task: {formatClock(clock.itemSeconds)}
               </span>
 
               <Button
@@ -516,8 +625,8 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
               <Clock className="h-3.5 w-3.5" />
               <span>{formatCountdown(timeLeftMs)}</span>
             </div>
-            <span className="text-xs font-bold text-primary">
-              {formatCents(rateCents)}
+            <span className="text-xs font-bold text-primary font-mono">
+              {formatClock(isHourly ? clock.sessionSeconds : clock.itemSeconds)}
             </span>
           </div>
 
@@ -542,7 +651,13 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         open={successModal}
         onOpenChange={setSuccessModal}
         title="Task Submitted Successfully!"
-        description={`Your evaluation has been submitted to the admin review queue. Upon approval, ${formatCents(rateCents)} will be credited to your wallet.`}
+        description={
+          isHourly
+            ? autoCredit
+              ? `Your counted time has been credited. You are paid ${formatCents(rateCents)} for each completed hour.`
+              : `Your counted time is credited once a reviewer approves this task. You are paid ${formatCents(rateCents)} for each completed hour.`
+            : `Your evaluation has been submitted to the admin review queue. Upon approval, ${formatCents(rateCents)} will be credited to your wallet.`
+        }
         footer={
           <>
             <Button
@@ -576,6 +691,32 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
           <p className="text-xs sm:text-sm text-muted-foreground">
             Thank you for your submission. Your draft has been cleared and your evaluation recorded.
           </p>
+        </div>
+      </ResponsiveDialog>
+
+      {/* Presence check (hourly) */}
+      <ResponsiveDialog
+        open={clock.paused === "needs_presence"}
+        onOpenChange={() => {}}
+        title="Still working?"
+        description="The clock is paused. Confirm you are still here to keep counting time."
+      >
+        <div className="py-4 text-center space-y-4">
+          <div className="w-14 h-14 rounded-full bg-[#FEF3C7] text-[#B45309] flex items-center justify-center mx-auto">
+            <Hand className="h-7 w-7" />
+          </div>
+          <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+            We check in every 15 minutes so hours stay accurate. No time is counted until you confirm.
+          </p>
+          <Button
+            type="button"
+            disabled={confirming}
+            onClick={handleConfirmPresence}
+            className="rounded-full text-xs font-bold px-6 min-h-[44px] bg-[#0F766E] hover:bg-[#0F766E]/90 text-white gap-1.5"
+          >
+            {confirming ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            I&apos;m still working
+          </Button>
         </div>
       </ResponsiveDialog>
     </div>

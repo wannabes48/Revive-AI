@@ -2,8 +2,8 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { formatCents, formatPay } from "@/lib/utils";
-import { TimesheetView } from "@/components/work/timesheet-view";
 import { StartItemButton } from "@/components/work/start-item-button";
+import { HoursPanel, type HoursSummary } from "@/components/work/hours-panel";
 import { Button } from "@/components/ui/button";
 import {
   ArrowLeft,
@@ -93,17 +93,45 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
     .filter((s) => s.status === "approved")
     .reduce((acc, curr) => acc + (curr.earning_cents || 0), 0);
 
-  // Fetch timesheets if hourly
-  let timeEntries: any[] = [];
+  // Hourly: server-counted hours and any running clock
+  let hours: HoursSummary = { creditedSeconds: 0, paidHours: 0, pendingSeconds: 0, todaySeconds: 0 };
+  let runningHere = false;
+  let runningElsewhere: string | null = null;
+  let heldItemId: string | null = null;
   if (isHourly) {
-    const { data: times } = await supabase
-      .from("time_entries")
-      .select("*")
-      .eq("task_id", task.id)
-      .eq("user_id", user.id)
-      .order("work_date", { ascending: false });
-
-    timeEntries = times || [];
+    const [{ data: hoursData }, { data: running }, { data: held }] = await Promise.all([
+      supabase.rpc("my_hours", { p_task_id: task.id }),
+      supabase
+        .from("work_sessions")
+        .select("task_id, last_beat_at, task:tasks(title)")
+        .eq("user_id", user.id)
+        .eq("status", "running")
+        .maybeSingle(),
+      supabase
+        .from("work_items")
+        .select("id")
+        .eq("task_id", task.id)
+        .eq("claimed_by", user.id)
+        .eq("status", "claimed")
+        .limit(1),
+    ]);
+    const row = Array.isArray(hoursData) ? hoursData[0] : hoursData;
+    hours = {
+      creditedSeconds: Number(row?.credited_seconds ?? 0),
+      paidHours: Number(row?.paid_hours ?? 0),
+      pendingSeconds: Number(row?.pending_seconds ?? 0),
+      todaySeconds: Number(row?.today_seconds ?? 0),
+    };
+    if (running) {
+      // A clock whose browser vanished over 2 minutes ago is closed on the next start.
+      const fresh = Date.parse(running.last_beat_at) > Date.parse(new Date().toISOString()) - 2 * 60 * 1000;
+      if (running.task_id === task.id) runningHere = true;
+      else if (fresh) {
+        const t = running.task as unknown as { title?: string } | null;
+        runningElsewhere = t?.title || "another task";
+      }
+    }
+    heldItemId = held?.[0]?.id ?? null;
   }
 
   return (
@@ -126,7 +154,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
             {task.category}
           </span>
           <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-            {isHourly ? "Hourly Timesheet" : "Per Task"}
+            {isHourly ? "Hourly" : "Per Task"}
           </span>
         </div>
       </div>
@@ -150,7 +178,7 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
             <span className="font-heading font-extrabold text-xl text-primary mt-0.5 block">
               {effectiveRate > 0
                 ? isHourly
-                  ? `${formatCents(effectiveRate)}/hr`
+                  ? `${formatCents(effectiveRate)} / completed hour`
                   : `${formatCents(effectiveRate)} / approved task`
                 : formatPay(task.pay_min, task.pay_max, task.pay_unit)}
             </span>
@@ -222,12 +250,58 @@ export default async function TaskWorkPage({ params }: TaskWorkPageProps) {
           )}
         </div>
       ) : (
-        <TimesheetView
-          taskId={task.id}
-          slug={task.slug}
-          rateCents={effectiveRate}
-          entries={timeEntries}
-        />
+        <div className="bg-card rounded-[14px] border border-primary/30 p-6 shadow-2xs space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="font-heading font-bold text-lg text-foreground">
+                {runningHere ? "Your clock is running" : "Ready to work?"}
+              </h3>
+              <p className="text-xs text-muted-foreground max-w-xl">
+                Time counts while you work on tasks. You are paid {formatCents(effectiveRate)} for each completed
+                hour of {task.auto_approve_hourly === false ? "approved " : ""}work time. There is no timesheet: the
+                clock pauses when you are idle or the tab is hidden.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Link href={`/work/${task.slug}/history`}>
+                <Button variant="outline" size="sm" className="rounded-full text-xs font-semibold gap-1.5 h-9">
+                  <History className="h-3.5 w-3.5" />
+                  <span>History</span>
+                </Button>
+              </Link>
+              {heldItemId && runningHere ? (
+                <Link href={`/work/${task.slug}/${heldItemId}`}>
+                  <Button className="rounded-full text-xs font-bold gap-2 h-9 px-6">
+                    <Play className="h-3.5 w-3.5 fill-current" />
+                    <span>Back to your task</span>
+                  </Button>
+                </Link>
+              ) : (
+                <StartItemButton
+                  taskId={task.id}
+                  slug={task.slug}
+                  hourly
+                  resuming={runningHere}
+                  disabled={application.work_paused || Boolean(runningElsewhere)}
+                />
+              )}
+            </div>
+          </div>
+
+          <HoursPanel hours={hours} rateCents={effectiveRate} />
+
+          {runningElsewhere && (
+            <div className="p-3 rounded-xl bg-[#FEF3C7] border border-[#FDE68A] text-[#78350F] text-xs">
+              Your clock is running on {runningElsewhere}. Stop it there before starting work here.
+            </div>
+          )}
+          {application.work_paused && (
+            <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
+              Work on this task is currently paused for your account. Please check back later.
+            </div>
+          )}
+        </div>
       )}
 
       {/* Instructions Section */}

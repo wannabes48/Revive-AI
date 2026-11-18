@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Task, WorkItem, ItemStatus } from "@/lib/supabase/types";
+import { Task, WorkItem, ItemBatch } from "@/lib/supabase/types";
 import { importWorkItems, deleteWorkItem, forceReleaseItem } from "@/actions/admin-work";
 import { formatDate, formatDateTime } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
@@ -32,9 +32,12 @@ import {
 interface WorkItemsManagerProps {
   task: Task;
   items: WorkItem[];
+  batches?: ItemBatch[];
+  /** Rendered between the counters and the item table (the batches panel). */
+  children?: React.ReactNode;
 }
 
-export function WorkItemsManager({ task, items: initialItems }: WorkItemsManagerProps) {
+export function WorkItemsManager({ task, items: initialItems, batches = [], children }: WorkItemsManagerProps) {
   const router = useRouter();
 
   const [statusFilter, setStatusFilter] = React.useState<string>("all");
@@ -42,6 +45,9 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
   const [importText, setImportText] = React.useState("");
   const [importFormat, setImportFormat] = React.useState<"json" | "csv">("json");
   const [isImporting, setIsImporting] = React.useState(false);
+  const [batchName, setBatchName] = React.useState("");
+  const [batchFilter, setBatchFilter] = React.useState<string>("all");
+  const batchNames = React.useMemo(() => new Map(batches.map((b) => [b.id, b.name])), [batches]);
 
   // Row action loaders
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
@@ -59,9 +65,12 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
   }, [initialItems]);
 
   const filteredItems = React.useMemo(() => {
-    if (statusFilter === "all") return initialItems;
-    return initialItems.filter((i) => i.status === statusFilter);
-  }, [initialItems, statusFilter]);
+    return initialItems.filter(
+      (i) =>
+        (statusFilter === "all" || i.status === statusFilter) &&
+        (batchFilter === "all" || i.batch_id === batchFilter)
+    );
+  }, [initialItems, statusFilter, batchFilter]);
 
   // Handle JSON or CSV Import
   async function handleImportSubmit(e: React.FormEvent) {
@@ -121,17 +130,18 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
       return;
     }
 
-    const res = await importWorkItems(task.id, parsedItems);
+    const res = await importWorkItems(task.id, parsedItems, batchName);
     setIsImporting(false);
 
     if (res.error) {
       toast.error("Import failed", { description: res.error });
     } else {
-      toast.success("Import Complete", {
-        description: `Added: ${res.added}, Skipped (duplicates): ${res.skipped}, Invalid: ${res.invalid}`,
+      toast.success("Imported as a draft batch", {
+        description: `Added: ${res.added}, Skipped (duplicates): ${res.skipped}, Invalid: ${res.invalid}. Publish the batch to release it.`,
       });
       setImportOpen(false);
       setImportText("");
+      setBatchName("");
       router.refresh();
     }
   }
@@ -243,6 +253,8 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
         </div>
       </div>
 
+      {children}
+
       {/* Filter Toolbar */}
       <div className="flex items-center justify-between gap-3 bg-card p-3 rounded-[14px] border border-border shadow-2xs overflow-x-auto">
         <div className="flex items-center gap-1.5">
@@ -266,6 +278,21 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
             </button>
           ))}
         </div>
+        {batches.length > 0 && (
+          <select
+            value={batchFilter}
+            onChange={(e) => setBatchFilter(e.target.value)}
+            aria-label="Filter by batch"
+            className="h-8 rounded-full border border-border bg-background px-3 text-xs text-foreground shrink-0"
+          >
+            <option value="all">All batches</option>
+            {batches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Work Items Table */}
@@ -292,6 +319,9 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
                   <span className="text-[11px] font-mono text-muted-foreground block">
                     Ref: {item.external_ref}
                   </span>
+                )}
+                {item.batch_id && batchNames.get(item.batch_id) && (
+                  <span className="text-[10px] text-muted-foreground block">Batch: {batchNames.get(item.batch_id)}</span>
                 )}
               </div>
             ),
@@ -412,7 +442,7 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
         open={importOpen}
         onOpenChange={setImportOpen}
         title="Import Work Items to Pool"
-        description="Bulk import up to 5,000 units of work. Duplicates on external_ref will be skipped automatically."
+        description="Up to 5,000 items. They arrive as a draft batch that contributors can't see until you publish it. Duplicates on external_ref are skipped."
         footer={
           <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 w-full">
             <Button
@@ -441,6 +471,18 @@ export function WorkItemsManager({ task, items: initialItems }: WorkItemsManager
         }
       >
         <form id="import-items-form" onSubmit={handleImportSubmit} className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="batch_name" className="text-xs font-semibold">
+              Batch name
+            </Label>
+            <Input
+              id="batch_name"
+              value={batchName}
+              onChange={(e) => setBatchName(e.target.value)}
+              placeholder="e.g. Batch 3: cardiology questions"
+              className="h-10 text-base sm:text-xs rounded-lg"
+            />
+          </div>
           <div className="flex items-center gap-2">
             <button
               type="button"

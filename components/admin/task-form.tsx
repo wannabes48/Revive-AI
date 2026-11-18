@@ -297,13 +297,13 @@ export function TaskForm({ task, isEdit }: TaskFormProps) {
               className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm text-foreground focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none"
             >
               <option value="per_item">Per Approved Item (Item Pool)</option>
-              <option value="hourly">Hourly Timesheet (Time Logging)</option>
+              <option value="hourly">Hourly (Server Work Clock)</option>
             </select>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="rate" className="text-xs font-semibold text-foreground">
-              {payModel === "hourly" ? "Hourly Rate (USD) *" : "Pay Per Item (USD) *"}
+              {payModel === "hourly" ? "Rate Per Completed Hour (USD) *" : "Pay Per Item (USD) *"}
             </Label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold text-xs">
@@ -346,6 +346,74 @@ export function TaskForm({ task, isEdit }: TaskFormProps) {
             </div>
           </div>
         </div>
+
+        {payModel === "hourly" && (
+          <p className="text-[11px] text-muted-foreground -mt-1">
+            Contributors are paid for each completed hour of approved work time. Time is counted by the server
+            while they work on items; nobody can enter hours by hand.
+          </p>
+        )}
+
+        {payModel === "hourly" && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-border/50">
+            <div className="space-y-2">
+              <Label htmlFor="max_credited_minutes" className="text-xs font-semibold text-foreground">
+                Max Credited Minutes per Item *
+              </Label>
+              <Input
+                id="max_credited_minutes"
+                name="max_credited_minutes"
+                type="number"
+                min="1"
+                max="240"
+                required
+                defaultValue={Math.round((task?.max_credited_seconds_per_item ?? 1800) / 60)}
+                className="rounded-lg h-10 border-border"
+              />
+              <span className="text-[10px] text-muted-foreground block">
+                Time above this on one item is never paid (default 30).
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="claim_minutes" className="text-xs font-semibold text-foreground">
+                Item Claim Duration (Minutes) *
+              </Label>
+              <Input
+                id="claim_minutes"
+                name="claim_minutes"
+                type="number"
+                min="5"
+                max="1440"
+                required
+                defaultValue={task?.claim_minutes ?? 30}
+                className="rounded-lg h-10 border-border"
+              />
+              <span className="text-[10px] text-muted-foreground block">
+                How long a contributor holds an item before it returns to the pool.
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="auto_approve_hourly" className="text-xs font-semibold text-foreground">
+                Crediting
+              </Label>
+              <select
+                id="auto_approve_hourly"
+                name="auto_approve_hourly"
+                defaultValue={task?.auto_approve_hourly === false ? "false" : "true"}
+                className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm text-foreground"
+              >
+                <option value="true">Credit time on submit (auto-approve)</option>
+                <option value="false">Credit time after reviewer approval</option>
+              </select>
+              <span className="text-[10px] text-muted-foreground block">
+                Review lets you lower or reject time before it is paid.
+              </span>
+            </div>
+            <input type="hidden" name="max_open_claims" value="1" />
+          </div>
+        )}
 
         {payModel === "per_item" && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-border/50">

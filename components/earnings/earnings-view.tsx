@@ -9,7 +9,6 @@ import {
   PayoutRequest,
   PayoutMethod,
   Profile,
-  TimeEntry,
 } from "@/lib/supabase/types";
 import {
   savePayoutMethod,
@@ -29,7 +28,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ResponsiveDialog } from "@/components/ui/responsive-dialog";
 import { ResponsiveTable, type ColumnDef } from "@/components/ui/responsive-table";
-import { TimesheetView } from "@/components/work/timesheet-view";
 import {
   Wallet,
   Clock,
@@ -49,25 +47,15 @@ import {
   Globe,
 } from "lucide-react";
 
-export interface HourlyTaskInfo {
-  appId: string;
-  taskId: string;
-  slug: string;
-  title: string;
-  rateCents: number;
-}
-
 interface EarningsViewProps {
   wallet: WalletBalance;
   ledger: LedgerEntry[];
   payouts: PayoutRequest[];
   methods: PayoutMethod[];
   profile: Profile;
-  hourlyTasks?: HourlyTaskInfo[];
-  timeEntries?: TimeEntry[];
 }
 
-type TabType = "activity" | "payouts" | "methods" | "timesheet";
+type TabType = "activity" | "payouts" | "methods";
 
 export function EarningsView({
   wallet,
@@ -75,8 +63,6 @@ export function EarningsView({
   payouts,
   methods,
   profile,
-  hourlyTasks = [],
-  timeEntries = [],
 }: EarningsViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -84,14 +70,9 @@ export function EarningsView({
   // Tab state (support query param ?tab=)
   const initialTab = searchParams.get("tab") as TabType;
   const [activeTab, setActiveTab] = React.useState<TabType>(
-    initialTab && ["activity", "payouts", "methods", "timesheet"].includes(initialTab)
+    initialTab && ["activity", "payouts", "methods"].includes(initialTab)
       ? initialTab
       : "activity"
-  );
-
-  // Selected hourly task for Timesheet tab
-  const [selectedHourlyTaskId, setSelectedHourlyTaskId] = React.useState<string>(
-    hourlyTasks[0]?.taskId || ""
   );
 
   // Filter state for activity tab
@@ -233,10 +214,6 @@ export function EarningsView({
     }
   }
 
-  // Current active hourly task for timesheet
-  const activeHourlyTask = hourlyTasks.find((t) => t.taskId === selectedHourlyTaskId) || hourlyTasks[0];
-  const activeTaskTimeEntries = timeEntries.filter((e) => e.task_id === activeHourlyTask?.taskId);
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -325,9 +302,6 @@ export function EarningsView({
           { id: "activity", label: `Ledger Activity (${ledger.length})` },
           { id: "payouts", label: `Payout History (${payouts.length})` },
           { id: "methods", label: `Payout Methods (${methods.length})` },
-          ...(hourlyTasks.length > 0
-            ? [{ id: "timesheet", label: `Timesheet (${hourlyTasks.length} hourly ${hourlyTasks.length === 1 ? "task" : "tasks"})` }]
-            : []),
         ].map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -691,35 +665,6 @@ export function EarningsView({
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {/* TAB 4: TIMESHEET (CONDITIONAL FOR HOURLY CONTRIBUTORS) */}
-      {activeTab === "timesheet" && hourlyTasks.length > 0 && activeHourlyTask && (
-        <div className="space-y-4">
-          {hourlyTasks.length > 1 && (
-            <div className="p-4 rounded-xl bg-card border border-border flex items-center justify-between gap-4">
-              <span className="text-xs font-semibold text-foreground">Select Hourly Task:</span>
-              <select
-                value={selectedHourlyTaskId}
-                onChange={(e) => setSelectedHourlyTaskId(e.target.value)}
-                className="h-9 rounded-md border border-input bg-background px-3 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary cursor-pointer font-medium"
-              >
-                {hourlyTasks.map((t) => (
-                  <option key={t.taskId} value={t.taskId}>
-                    {t.title} ({formatCents(t.rateCents)}/hr)
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <TimesheetView
-            taskId={activeHourlyTask.taskId}
-            slug={activeHourlyTask.slug}
-            rateCents={activeHourlyTask.rateCents}
-            entries={activeTaskTimeEntries}
-          />
         </div>
       )}
 

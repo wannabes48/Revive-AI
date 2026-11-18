@@ -46,12 +46,20 @@ export interface ReviewQueueSubmission extends Omit<Submission, "profile" | "tas
     external_ref: string | null;
     payload: Record<string, any>;
   };
+  /** Median seconds of approved work on this task (null until there are 5+). */
+  taskMedianSeconds?: number | null;
   contributorStats: {
     approvedCount: number;
     totalReviewed: number;
     approvalRate: number;
     avgScore: number | null;
   };
+}
+
+function minutesLabel(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 
 interface ReviewQueueProps {
@@ -69,6 +77,7 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
   // Review Form State for current submission
   const [score, setScore] = React.useState<number>(5);
   const [reviewerNote, setReviewerNote] = React.useState<string>("");
+  const [creditedMinutes, setCreditedMinutes] = React.useState<string>("");
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [mobileTab, setMobileTab] = React.useState<"item" | "answers" | "review">("answers");
 
@@ -79,11 +88,23 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
 
   const current = filteredSubmissions[selectedIdx] || null;
 
+  // Time facts for the current submission
+  const isHourly = current?.task?.pay_model === "hourly";
+  const spentSeconds = Number(current?.seconds_spent ?? 0);
+  const capSeconds = Number(current?.task?.max_credited_seconds_per_item ?? 1800);
+  const maxCreditSeconds = Math.min(spentSeconds, capSeconds);
+  const medianSeconds = current?.taskMedianSeconds ?? null;
+  const tooFast = medianSeconds != null && spentSeconds > 0 && spentSeconds < medianSeconds * 0.2;
+  const overCap = isHourly && spentSeconds > capSeconds;
+  const creditedSecondsInput = Math.round(Math.max(0, Number(creditedMinutes) || 0) * 60);
+  const creditSeconds = Math.min(creditedSecondsInput, maxCreditSeconds);
+
   // Reset form when active submission changes
   React.useEffect(() => {
     setScore(5);
     setReviewerNote("");
-  }, [current?.id]);
+    setCreditedMinutes(current ? String(Math.round((Math.min(Number(current.seconds_spent ?? 0), Number(current.task?.max_credited_seconds_per_item ?? 1800)) / 60) * 10) / 10) : "");
+  }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Adjust selectedIdx if out of range
   React.useEffect(() => {
@@ -108,7 +129,8 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
       current.id,
       decision,
       reviewerNote.trim() || undefined,
-      score
+      score,
+      isHourly && decision === "approved" ? creditSeconds : undefined
     );
     setIsSubmitting(false);
 
@@ -435,6 +457,59 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
                   Reviewer Evaluation
                 </h4>
 
+                {/* Work time (server count) */}
+                <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Time on item (server count)</span>
+                    <span className="font-mono font-bold text-foreground">{minutesLabel(spentSeconds)}</span>
+                  </div>
+                  {isHourly && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Credit cap per item</span>
+                      <span className="font-mono">{minutesLabel(capSeconds)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Task median</span>
+                    <span className="font-mono">
+                      {medianSeconds != null
+                        ? `${minutesLabel(medianSeconds)} (${spentSeconds > 0 ? Math.round((spentSeconds / medianSeconds) * 100) : 0}%)`
+                        : "Not enough data"}
+                    </span>
+                  </div>
+                  {tooFast && (
+                    <p className="text-[11px] font-semibold text-destructive">
+                      Suspiciously fast: under 20% of the task median.
+                    </p>
+                  )}
+                  {overCap && (
+                    <p className="text-[11px] font-semibold text-[#B45309]">
+                      Over the per-item cap. Only {minutesLabel(capSeconds)} can be credited.
+                    </p>
+                  )}
+                </div>
+
+                {isHourly && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="credited_minutes" className="text-xs font-semibold">
+                      Credited minutes
+                    </Label>
+                    <Input
+                      id="credited_minutes"
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      max={(maxCreditSeconds / 60).toFixed(1)}
+                      value={creditedMinutes}
+                      onChange={(e) => setCreditedMinutes(e.target.value)}
+                      className="h-10 text-xs rounded-lg font-mono"
+                    />
+                    <span className="text-[10px] text-muted-foreground block">
+                      You can lower this, never raise it above {minutesLabel(maxCreditSeconds)}.
+                    </span>
+                  </div>
+                )}
+
                 {/* Quality Score Stars */}
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">Quality Score (1 to 5)</Label>
@@ -484,7 +559,10 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
                     ) : (
                       <Check className="h-4 w-4" />
                     )}
-                    <span>Approve Work<span className="hidden md:inline"> (A)</span></span>
+                    <span>
+                      {isHourly ? `Approve and credit ${minutesLabel(creditSeconds)}` : "Approve Work"}
+                      <span className="hidden md:inline"> (A)</span>
+                    </span>
                   </Button>
 
                   <div className="grid grid-cols-2 gap-2">

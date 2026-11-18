@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { EarningsView, HourlyTaskInfo } from "@/components/earnings/earnings-view";
-import { WalletBalance, TimeEntry } from "@/lib/supabase/types";
+import { EarningsView } from "@/components/earnings/earnings-view";
+import { WalletBalance } from "@/lib/supabase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -98,44 +98,6 @@ export default async function EarningsPage() {
     .eq("id", user.id)
     .single();
 
-  // Fetch approved hourly applications for conditional Timesheet tab
-  const { data: approvedApps } = await supabase
-    .from("applications")
-    .select(`
-      id,
-      task_id,
-      rate_cents,
-      tasks (
-        id,
-        slug,
-        title,
-        pay_model,
-        rate_cents
-      )
-    `)
-    .eq("user_id", user.id)
-    .eq("status", "approved");
-
-  const hourlyTasks: HourlyTaskInfo[] = (approvedApps || [])
-    .filter((a: any) => a.tasks?.pay_model === "hourly")
-    .map((a: any) => ({
-      appId: a.id,
-      taskId: a.tasks.id,
-      slug: a.tasks.slug,
-      title: a.tasks.title,
-      rateCents: a.rate_cents ?? a.tasks.rate_cents ?? 0,
-    }));
-
-  let timeEntries: TimeEntry[] = [];
-  if (hourlyTasks.length > 0) {
-    const { data: times } = await supabase
-      .from("time_entries")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("work_date", { ascending: false });
-    timeEntries = (times || []) as TimeEntry[];
-  }
-
   return (
     <div className="max-w-6xl mx-auto">
       <EarningsView
@@ -144,8 +106,6 @@ export default async function EarningsPage() {
         payouts={payouts || []}
         methods={methods || []}
         profile={profile || ({} as any)}
-        hourlyTasks={hourlyTasks}
-        timeEntries={timeEntries}
       />
     </div>
   );

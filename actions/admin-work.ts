@@ -10,7 +10,8 @@ export async function reviewSubmission(
   submissionId: string,
   decision: SubmissionStatus,
   note?: string,
-  score?: number
+  score?: number,
+  creditedSeconds?: number
 ) {
   const { supabase } = await requireAdmin();
 
@@ -27,6 +28,8 @@ export async function reviewSubmission(
     p_decision: decision,
     p_note: note?.trim() || null,
     p_score: score ?? null,
+    p_credited_seconds:
+      creditedSeconds == null ? null : Math.max(0, Math.round(creditedSeconds)),
   });
 
   if (error) {
@@ -38,35 +41,10 @@ export async function reviewSubmission(
   return { success: true };
 }
 
-export async function approveTimeEntry(
-  entryId: string,
-  approve: boolean,
-  note?: string
-) {
-  const { supabase } = await requireAdmin();
-
-  if (!approve && (!note || !note.trim())) {
-    return { error: "A note explaining the rejection is required." };
-  }
-
-  const { error } = await supabase.rpc("approve_time_entry", {
-    p_id: entryId,
-    p_approve: approve,
-    p_note: note?.trim() || null,
-  });
-
-  if (error) {
-    return { error: mapRpcError(error.message) };
-  }
-
-  revalidatePath("/admin/timesheets");
-  revalidatePath("/admin");
-  return { success: true };
-}
-
 export async function importWorkItems(
   taskId: string,
-  items: Array<{ external_ref?: string | null; payload: Record<string, any> }>
+  items: Array<{ external_ref?: string | null; payload: Record<string, any> }>,
+  batchName?: string
 ) {
   const { supabase } = await requireAdmin();
 
@@ -76,6 +54,23 @@ export async function importWorkItems(
 
   if (items.length > 5000) {
     return { error: "Upload capped at 5,000 items per batch." };
+  }
+
+  // Every import lands in a new DRAFT batch: contributors can't see it until published.
+  const name =
+    batchName?.trim() ||
+    `Import ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const { data: batch, error: batchError } = await supabase
+    .from("item_batches")
+    .insert({ task_id: taskId, name, status: "draft" })
+    .select("id")
+    .single();
+  if (batchError || !batch) {
+    return {
+      error: batchError?.message?.includes("item_batches")
+        ? "Apply supabase/013_batches_and_work_clock.sql to enable batches."
+        : `Could not create the batch: ${batchError?.message}`,
+    };
   }
 
   let added = 0;
@@ -96,6 +91,7 @@ export async function importWorkItems(
 
       validRows.push({
         task_id: taskId,
+        batch_id: batch.id,
         external_ref: item.external_ref ? String(item.external_ref).trim() : null,
         payload: item.payload,
         status: "available",
@@ -113,7 +109,7 @@ export async function importWorkItems(
         .select("id");
 
       if (error) {
-        // Fallback: insert one by one or report error
+        if (added === 0) await supabase.from("item_batches").delete().eq("id", batch.id);
         return { error: `Batch import error: ${error.message}` };
       }
 
@@ -123,11 +119,16 @@ export async function importWorkItems(
     }
   }
 
+  // A batch where every row was a duplicate is just noise.
+  if (added === 0) await supabase.from("item_batches").delete().eq("id", batch.id);
+
   revalidatePath(`/admin/tasks/${taskId}/items`);
   revalidatePath("/admin/tasks");
 
   return {
     success: true,
+    batchId: added > 0 ? batch.id : null,
+    batchName: name,
     added,
     skipped,
     invalid,
@@ -360,5 +361,91 @@ export async function adminAdjustLedger(
   }
 
   revalidatePath("/admin/finance");
+  return { success: true };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Batches                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export async function publishBatch(
+  batchId: string,
+  taskId: string,
+  status: "published" | "paused" | "draft",
+  publishAt?: string | null
+) {
+  const { supabase } = await requireAdmin();
+
+  let when: string | null = null;
+  if (status === "published" && publishAt) {
+    const d = new Date(publishAt);
+    if (Number.isNaN(d.getTime())) return { error: "Choose a valid release time." };
+    when = d.toISOString();
+  }
+
+  const { error } = await supabase.rpc("publish_batch", {
+    p_batch: batchId,
+    p_status: status,
+    p_publish_at: when,
+  });
+  if (error) return { error: mapRpcError(error.message) };
+
+  revalidatePath(`/admin/tasks/${taskId}/items`);
+  revalidatePath("/work");
+  return { success: true };
+}
+
+/** Gives every still-available item in the batch a fresh random position. */
+export async function reshuffleBatch(batchId: string, taskId: string) {
+  const { supabase } = await requireAdmin();
+  const { data: items, error } = await supabase
+    .from("work_items")
+    .select("id")
+    .eq("batch_id", batchId)
+    .eq("status", "available");
+  if (error) return { error: error.message };
+
+  const rows = items || [];
+  for (let i = 0; i < rows.length; i += 200) {
+    const chunk = rows.slice(i, i + 200);
+    await Promise.all(
+      chunk.map((r) =>
+        supabase.from("work_items").update({ random_key: Math.random() }).eq("id", r.id)
+      )
+    );
+  }
+
+  revalidatePath(`/admin/tasks/${taskId}/items`);
+  return { success: true, reshuffled: rows.length };
+}
+
+export async function deleteBatch(batchId: string, taskId: string) {
+  const { supabase } = await requireAdmin();
+  const { data: batch } = await supabase
+    .from("item_batches")
+    .select("status")
+    .eq("id", batchId)
+    .maybeSingle();
+  if (!batch) return { error: "Batch not found." };
+  if (batch.status !== "draft") return { error: "Only draft batches can be deleted. Unpublish it first." };
+
+  const { count } = await supabase
+    .from("work_items")
+    .select("id", { count: "exact", head: true })
+    .eq("batch_id", batchId)
+    .neq("status", "available");
+  // Deleting items cascades to their submissions, so never delete worked-on items.
+  const { count: submitted } = await supabase
+    .from("submissions")
+    .select("id, work_item:work_items!inner(batch_id)", { count: "exact", head: true })
+    .eq("work_item.batch_id", batchId);
+  if ((count || 0) > 0 || (submitted || 0) > 0) {
+    return { error: "This batch has items that were already worked on, so it can't be deleted." };
+  }
+
+  const { error } = await supabase.from("item_batches").delete().eq("id", batchId);
+  if (error) return { error: error.message };
+
+  revalidatePath(`/admin/tasks/${taskId}/items`);
   return { success: true };
 }

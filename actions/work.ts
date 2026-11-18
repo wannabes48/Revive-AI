@@ -6,29 +6,32 @@ import { redirect } from "next/navigation";
 import { buildAnswersSchema } from "@/lib/item-schema";
 import { mapRpcError } from "@/lib/rpc-errors";
 
-export async function startNextItem(taskId: string, slug: string) {
+/**
+ * Starts work on a task: for hourly tasks this starts (or resumes) the server
+ * work clock, then claims a random item and opens it.
+ */
+export async function startWorking(taskId: string, slug: string, hourly: boolean) {
   const supabase = await createClient();
-  const { data: itemId, error } = await supabase.rpc("claim_next_item", {
-    p_task_id: taskId,
-  });
 
-  if (error) {
-    return { error: mapRpcError(error.message) };
+  if (hourly) {
+    const { error } = await supabase.rpc("start_work_session", { p_task_id: taskId });
+    if (error) return { error: mapRpcError(error.message) };
   }
 
+  const { data: itemId, error } = await supabase.rpc("claim_next_item", { p_task_id: taskId });
+  if (error) return { error: mapRpcError(error.message) };
+
   if (!itemId) {
+    // Nothing to work on: stop the clock so no time is counted.
+    if (hourly) await supabase.rpc("end_work_session");
+    revalidatePath(`/work/${slug}`);
     return { empty: true };
   }
 
   redirect(`/work/${slug}/${itemId}`);
 }
 
-export async function submitWork(
-  taskId: string,
-  itemId: string,
-  answers: unknown,
-  seconds: number
-) {
+export async function submitWork(taskId: string, itemId: string, answers: unknown) {
   const supabase = await createClient();
   const { data: task } = await supabase
     .from("tasks")
@@ -48,10 +51,10 @@ export async function submitWork(
     };
   }
 
+  // The browser sends no time: the server stores its own count.
   const { error } = await supabase.rpc("submit_work", {
     p_item_id: itemId,
     p_answers: parsed.data,
-    p_seconds: Math.min(Math.max(Math.round(seconds), 0), 4 * 3600),
   });
 
   if (error) {
@@ -61,85 +64,42 @@ export async function submitWork(
   revalidatePath(`/work/${task.slug}`);
   revalidatePath("/dashboard");
   revalidatePath("/work");
+  revalidatePath("/earnings");
   return { success: true };
+}
+
+export async function heartbeat(itemId: string, active: boolean) {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("work_heartbeat", {
+    p_item_id: itemId,
+    p_active: active,
+  });
+  if (error) return { error: mapRpcError(error.message) };
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    itemSeconds: Number(row?.item_seconds ?? 0),
+    sessionSeconds: Number(row?.session_seconds ?? 0),
+    stopReason: (row?.stop_reason ?? null) as string | null,
+  };
+}
+
+export async function confirmPresence() {
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("confirm_presence");
+  if (error) return { error: mapRpcError(error.message) };
+  return { success: true };
+}
+
+/** Stops the clock and returns any held item to the pool. */
+export async function stopWorking(slug: string) {
+  const supabase = await createClient();
+  await supabase.rpc("end_work_session");
+  revalidatePath(`/work/${slug}`);
+  redirect(`/work/${slug}`);
 }
 
 export async function releaseItem(itemId: string, slug: string) {
   const supabase = await createClient();
   await supabase.rpc("release_item", { p_item_id: itemId });
   redirect(`/work/${slug}`);
-}
-
-export async function logTime(
-  taskId: string,
-  workDate: string,
-  minutes: number,
-  description: string
-) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return { error: "Please log in to log time." };
-  }
-
-  // Find user's approved application for this task
-  const { data: application, error: appError } = await supabase
-    .from("applications")
-    .select("id")
-    .eq("task_id", taskId)
-    .eq("user_id", user.id)
-    .eq("status", "approved")
-    .single();
-
-  if (appError || !application) {
-    return { error: "You are not an approved contributor on this task." };
-  }
-
-  const { error } = await supabase.from("time_entries").insert({
-    user_id: user.id,
-    application_id: application.id,
-    task_id: taskId,
-    work_date: workDate,
-    minutes,
-    description: description.trim(),
-    status: "submitted",
-  });
-
-  if (error) {
-    return { error: mapRpcError(error.message) };
-  }
-
-  revalidatePath(`/work`);
-  revalidatePath(`/earnings`);
-  revalidatePath("/dashboard");
-  return { success: true };
-}
-
-export async function deleteTimeEntry(entryId: string) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return { error: "Please log in." };
-  }
-
-  const { error } = await supabase
-    .from("time_entries")
-    .delete()
-    .eq("id", entryId)
-    .eq("user_id", user.id)
-    .eq("status", "submitted");
-
-  if (error) {
-    return { error: mapRpcError(error.message) };
-  }
-
-  revalidatePath(`/work`);
-  revalidatePath(`/earnings`);
-  return { success: true };
 }

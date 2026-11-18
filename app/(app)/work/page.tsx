@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatHoursMinutes } from "@/lib/format-time";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { formatCents, formatPay } from "@/lib/utils";
@@ -56,14 +57,17 @@ export default async function ContributorWorkPage() {
   // Fetch contributor submissions stats grouped by task
   const { data: submissions } = await supabase
     .from("submissions")
-    .select("task_id, status, earning_cents")
+    .select("task_id, status, earning_cents, seconds_spent")
     .eq("user_id", user.id);
 
-  // Fetch contributor time entries stats grouped by task
-  const { data: timeEntries } = await supabase
-    .from("time_entries")
-    .select("task_id, minutes, status, earning_cents")
-    .eq("user_id", user.id);
+  // Hourly work: server-counted, credited hours per application
+  const appIds = (approvedApps || []).map((a: { id: string }) => a.id);
+  const { data: hourCredits } = appIds.length
+    ? await supabase
+        .from("hour_credits")
+        .select("application_id, credited_seconds, paid_hours")
+        .in("application_id", appIds)
+    : { data: [] as { application_id: string; credited_seconds: number; paid_hours: number }[] };
 
   return (
     <div className="space-y-6">
@@ -107,18 +111,14 @@ export default async function ContributorWorkPage() {
               .filter((s) => s.status === "approved")
               .reduce((acc, curr) => acc + (curr.earning_cents || 0), 0);
 
-            const taskTimes = (timeEntries || []).filter((t) => t.task_id === task.id);
-            const approvedMinutes = taskTimes
-              .filter((t) => t.status === "approved")
-              .reduce((acc, curr) => acc + curr.minutes, 0);
-            const inReviewMinutes = taskTimes
-              .filter((t) => t.status === "submitted")
-              .reduce((acc, curr) => acc + curr.minutes, 0);
-            const timeEarnings = taskTimes
-              .filter((t) => t.status === "approved")
-              .reduce((acc, curr) => acc + (curr.earning_cents || 0), 0);
+            const credit = (hourCredits || []).find((h) => h.application_id === app.id);
+            const creditedSeconds = Number(credit?.credited_seconds ?? 0);
+            const paidHours = Number(credit?.paid_hours ?? 0);
+            const inReviewSeconds = taskSubs
+              .filter((s) => s.status === "submitted")
+              .reduce((acc, curr) => acc + (curr.seconds_spent || 0), 0);
 
-            const totalEarningsCents = subEarnings + timeEarnings;
+            const totalEarningsCents = isHourly ? paidHours * (effectiveRate || 0) : subEarnings;
 
             return (
               <div
@@ -133,7 +133,7 @@ export default async function ContributorWorkPage() {
                     <span className="text-xs font-mono font-bold text-foreground">
                       {effectiveRate
                         ? isHourly
-                          ? `${formatCents(effectiveRate)}/hr`
+                          ? `${formatCents(effectiveRate)}/hour`
                           : `${formatCents(effectiveRate)} / task`
                         : formatPay(task.pay_min, task.pay_max, task.pay_unit)}
                     </span>
@@ -144,7 +144,7 @@ export default async function ContributorWorkPage() {
                       <Link href={`/work/${task.slug}`}>{task.title}</Link>
                     </h3>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      {isHourly ? "Hourly timesheet model" : "Per-approved-task compensation model"}
+                      {isHourly ? "Paid per completed hour of tracked work" : "Per-approved-task compensation model"}
                     </p>
                   </div>
 
@@ -159,12 +159,10 @@ export default async function ContributorWorkPage() {
                   <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/60 text-xs">
                     <div className="p-2.5 rounded-xl bg-muted/30 border border-border/50">
                       <span className="text-[10px] text-muted-foreground uppercase font-semibold block">
-                        {isHourly ? "Logged" : "Done"}
+                        {isHourly ? "Credited" : "Done"}
                       </span>
                       <span className="font-heading font-bold text-sm text-foreground mt-0.5 block">
-                        {isHourly
-                          ? `${Math.round(approvedMinutes / 60)}h`
-                          : completedItems}
+                        {isHourly ? formatHoursMinutes(creditedSeconds) : completedItems}
                       </span>
                     </div>
 
@@ -173,9 +171,7 @@ export default async function ContributorWorkPage() {
                         In Review
                       </span>
                       <span className="font-heading font-bold text-sm text-[#B45309] mt-0.5 block">
-                        {isHourly
-                          ? `${Math.round(inReviewMinutes / 60)}h`
-                          : inReviewItems}
+                        {isHourly ? formatHoursMinutes(inReviewSeconds) : inReviewItems}
                       </span>
                     </div>
 

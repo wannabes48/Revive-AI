@@ -157,6 +157,13 @@ export const taskSchema = z.object({
   claim_minutes: z.coerce.number().int().min(5, "Min 5 mins").default(60),
   max_open_claims: z.coerce.number().int().min(1).default(1),
   budget_cents: z.coerce.number().int().min(0).optional().nullable(),
+  max_credited_seconds_per_item: z.coerce
+    .number()
+    .int()
+    .min(60, "Credit cap must be at least 1 minute")
+    .max(4 * 3600, "Credit cap can be at most 4 hours")
+    .default(1800),
+  auto_approve_hourly: z.boolean().default(true),
 });
 
 export const payoutMethodSchema = z.discriminatedUnion("type", [

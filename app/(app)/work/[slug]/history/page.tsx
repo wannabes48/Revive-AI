@@ -57,6 +57,7 @@ export default async function SubmissionHistoryPage({
       reviewer_note,
       reviewed_at,
       earning_cents,
+      credited_seconds,
       created_at,
       work_items (
         external_ref,
@@ -146,11 +147,15 @@ export default async function SubmissionHistoryPage({
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     {mins > 0 && <span>Spent {mins}m</span>}
                     <span>Submitted {formatDate(sub.created_at)}</span>
-                    {sub.earning_cents != null && (
+                    {sub.credited_seconds != null ? (
+                      <span className="font-heading font-extrabold text-sm text-[#0F766E]">
+                        +{Math.round(sub.credited_seconds / 60)} min credited
+                      </span>
+                    ) : sub.earning_cents != null && sub.earning_cents > 0 ? (
                       <span className="font-heading font-extrabold text-sm text-[#0F766E]">
                         +{formatCents(sub.earning_cents)}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 

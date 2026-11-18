@@ -102,6 +102,9 @@ export interface Task {
   claim_minutes: number;
   max_open_claims: number;
   budget_cents: number | null;
+  // Migration 013
+  max_credited_seconds_per_item?: number;
+  auto_approve_hourly?: boolean;
 }
 
 export interface Application {
@@ -134,7 +137,22 @@ export interface WorkItem {
   claim_expires_at: string | null;
   attempts: number;
   created_at: string;
+  batch_id?: string;
+  random_key?: number;
   task?: Task;
+}
+
+export type BatchStatus = "draft" | "published" | "paused";
+
+export interface ItemBatch {
+  id: string;
+  task_id: string;
+  name: string;
+  status: BatchStatus;
+  publish_at: string | null;
+  published_at: string | null;
+  published_by: string | null;
+  created_at: string;
 }
 
 export interface Submission {
@@ -145,6 +163,7 @@ export interface Submission {
   application_id: string;
   answers: Record<string, any>;
   seconds_spent: number | null;
+  credited_seconds?: number | null;
   status: SubmissionStatus;
   score: number | null;
   reviewer_id: string | null;
