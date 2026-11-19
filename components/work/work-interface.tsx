@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, WorkItem } from "@/lib/supabase/types";
 import { type Field, type Part, buildAnswersSchema, groupRuns, partProgress, resolveParts } from "@/lib/item-schema";
-import { clinicalFlags, RATING_LABELS } from "@/lib/rubrics/clinical-ai-evaluation";
+import { formFlags, scaleMeanings } from "@/lib/rubrics";
 import { submitWork, releaseItem, startWorking, stopWorking, confirmPresence, saveDraft } from "@/actions/work";
 import { AnswerField } from "@/components/work/answer-field";
 import { SimpleMarkdown } from "@/components/work/simple-markdown";
@@ -28,7 +28,6 @@ import {
   Info,
   Check,
   ChevronDown,
-  ChevronUp,
   Square,
   Hand,
   PauseCircle,
@@ -36,6 +35,8 @@ import {
   ArrowLeft,
   CloudCheck,
   CloudOff,
+  Eye,
+  X,
 } from "lucide-react";
 
 interface WorkInterfaceProps {
@@ -44,18 +45,14 @@ interface WorkInterfaceProps {
   rateCents: number;
   /** The contributor's server-saved draft for this item, if any. */
   draft?: { answers: Record<string, unknown>; updatedAt: string } | null;
+  /**
+   * Admin preview: the real screen, but nothing leaves the browser. No drafts (server or local),
+   * no submissions, no claim actions, and the work clock never starts.
+   */
+  preview?: { onExit: () => void };
 }
 
 const ALL_PART = "__all";
-
-/** Meanings for the shared 1-5 clinical scale, shown in the "Rating scale" panel. */
-const SCALE_MEANINGS: Record<string, string> = {
-  Excellent: "Accurate, safe, complete, well-supported, and appropriately calibrated.",
-  Strong: "Substantially correct; only minor limitations that do not materially affect care.",
-  "Adequate / Mixed": "Partly correct, but contains meaningful gaps, weak support, or omissions.",
-  Poor: "Major errors, unsafe elements, or substantial failures in reasoning or completeness.",
-  "Very poor": "Fundamentally incorrect, misleading, or potentially dangerous.",
-};
 
 function cleanAnswers(fields: Field[], answers: Record<string, unknown>) {
   const out: Record<string, unknown> = {};
@@ -71,13 +68,33 @@ function prettyKey(key: string) {
   return key.replace(/_/g, " ");
 }
 
-export function WorkInterface({ task, item, rateCents, draft = null }: WorkInterfaceProps) {
+export function WorkInterface({ task, item, rateCents, draft = null, preview }: WorkInterfaceProps) {
   const router = useRouter();
+  const isPreview = Boolean(preview);
   const isHourly = task.pay_model === "hourly";
   const autoCredit = isHourly && task.auto_approve_hourly !== false;
-  const clock = useWorkClock(item.id);
+  const clock = useWorkClock(item.id, !isPreview);
   const [stopping, setStopping] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
+
+  // The sticky header's height, as --work-header-h. Elements carry scroll-mt with it, so the
+  // stepper, the panes and any field scrolled to on focus stop below the header.
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const headerRef = React.useRef<HTMLDivElement>(null);
+  const stepperRef = React.useRef<HTMLElement>(null);
+  const guidelinesRef = React.useRef<HTMLElement>(null);
+  React.useLayoutEffect(() => {
+    const header = headerRef.current;
+    const root = rootRef.current;
+    if (!header || !root) return;
+    const update = () => {
+      root.style.setProperty("--work-header-h", `${Math.ceil(header.getBoundingClientRect().height)}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, []);
 
   // The claim was lost (expired and re-claimed, or released by an admin).
   React.useEffect(() => {
@@ -106,6 +123,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
 
   // Answers: server draft first, then the local backup
   const [answers, setAnswers] = React.useState<Record<string, unknown>>(() => {
+    if (isPreview) return {};
     if (draft?.answers && Object.keys(draft.answers).length > 0) return draft.answers;
     if (typeof window !== "undefined") {
       try {
@@ -126,7 +144,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
   }, [answers]);
 
   const persistDraft = React.useCallback(async () => {
-    if (!dirtyRef.current) return;
+    if (isPreview || !dirtyRef.current) return;
     dirtyRef.current = false;
     setSaveState("saving");
     const res = await saveDraft(item.id, answersRef.current);
@@ -137,10 +155,11 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
     }
     setSaveState("idle");
     if ("savedAt" in res && res.savedAt) setSavedAt(res.savedAt);
-  }, [item.id]);
+  }, [item.id, isPreview]);
 
   // Save on the server 2 seconds after the contributor stops changing answers
   React.useEffect(() => {
+    if (isPreview) return;
     try {
       localStorage.setItem(draftKey, JSON.stringify(answers));
     } catch {
@@ -149,7 +168,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
     if (!dirtyRef.current) return;
     const t = setTimeout(() => void persistDraft(), 2000);
     return () => clearTimeout(t);
-  }, [answers, draftKey, persistDraft]);
+  }, [answers, draftKey, persistDraft, isPreview]);
 
   // Steps
   const progress = React.useMemo(
@@ -171,7 +190,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
     if (!state || state.locked) return;
     void persistDraft();
     setCurrentPartId(id);
-    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+    stepperRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   const [flagsDialog, setFlagsDialog] = React.useState<string[] | null>(null);
@@ -181,27 +200,18 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
       | Extract<Field, { type: "rating" }>
       | undefined;
     if (!f?.scaleLabels) return null;
+    const meanings = scaleMeanings(fields, task.instructions);
     return f.scaleLabels
-      .map((label, i) => ({ score: f.min + i, label, meaning: SCALE_MEANINGS[label] }))
+      .map((label, i) => ({ score: f.min + i, label, meaning: meanings[i] as string | undefined }))
       .reverse();
-  }, [fields]);
-  const usesClinicalScale = ratingScale?.some((r) => RATING_LABELS.includes(r.label)) ?? false;
+  }, [fields, task.instructions]);
+  const scaleHasMeanings = ratingScale?.some((r) => r.meaning) ?? false;
 
   const [instructionsOpen, setInstructionsOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
   const [releasing, setReleasing] = React.useState(false);
   const [successModal, setSuccessModal] = React.useState(false);
   const [claimingNext, setClaimingNext] = React.useState(false);
-
-  // Draft auto-save to localStorage
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saveTimer = setTimeout(() => {
-      localStorage.setItem(draftKey, JSON.stringify(answers));
-    }, 1500);
-
-    return () => clearTimeout(saveTimer);
-  }, [answers, draftKey]);
 
   // Live countdown to claim_expires_at
   const [timeLeftMs, setTimeLeftMs] = React.useState<number>(() => {
@@ -245,13 +255,17 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
 
   async function handleSubmit(e?: React.FormEvent) {
     e?.preventDefault();
+    if (isPreview) {
+      toast.info("Preview only: submissions are turned off.");
+      return;
+    }
     if (!isFormValid) {
       toast.error(
         isMultiPart ? "Complete every step before submitting." : "Please fill in all required fields before submitting."
       );
       return;
     }
-    const flags = clinicalFlags(answers);
+    const flags = formFlags(fields, cleanAnswers(fields, answers));
     if (flags.length > 0) {
       setFlagsDialog(flags);
       return;
@@ -261,6 +275,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
 
   async function doSubmit() {
     setFlagsDialog(null);
+    if (isPreview) return;
     setSubmitting(true);
     const res = await submitWork(task.id, item.id, cleanAnswers(fields, answers));
     setSubmitting(false);
@@ -332,8 +347,9 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
     clock.resync();
   }
 
-  const clockState: { label: string; tone: "run" | "pause" | "stop" } =
-    clock.paused === null
+  const clockState: { label: string; tone: "run" | "pause" | "stop" } = isPreview
+    ? { label: "Preview: the work clock is off", tone: "pause" }
+    : clock.paused === null
       ? { label: "Running", tone: "run" }
       : clock.paused === "idle"
       ? { label: "Paused: idle (move or type to resume)", tone: "pause" }
@@ -346,143 +362,209 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
       : { label: "Clock unavailable", tone: "stop" };
 
   return (
-    <div className="space-y-4">
-      {/* Top Work Header: title + actions, then status chips on their own row */}
-      <div className="lg:sticky lg:top-16 z-30 bg-card/95 backdrop-blur-md border border-border rounded-[14px] shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-4 pt-3.5 pb-3">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <Link
-              href={`/work/${task.slug}`}
-              className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            >
-              ← Task Home
-            </Link>
-            <span className="text-muted-foreground/40 shrink-0">•</span>
-            <h2 className="font-heading font-bold text-sm sm:text-base text-foreground truncate">
-              {task.title}
-            </h2>
-          </div>
+    <div
+      ref={rootRef}
+      className="min-w-0 [--work-header-h:9rem] [&_:is(input,select,textarea,[role=radio])]:scroll-mt-[calc(var(--work-header-h)+1rem)]"
+    >
+      {/* Sticky header. Only this wrapper is sticky; its solid background hides what scrolls under it. */}
+      <div ref={headerRef} className="sticky top-0 z-30 bg-background pb-3">
+        <div className="bg-card border border-border rounded-[14px] shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-4 pt-3.5 pb-3">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              {!isPreview && (
+                <>
+                  <Link
+                    href={`/work/${task.slug}`}
+                    aria-label="Task Home"
+                    className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                  >
+                    ←<span className="hidden sm:inline"> Task Home</span>
+                  </Link>
+                  <span className="text-muted-foreground/40 shrink-0">•</span>
+                </>
+              )}
+              <h2 className="font-heading font-bold text-sm sm:text-base text-foreground truncate">
+                {task.title}
+              </h2>
+            </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setInstructionsOpen(true)}
-              className="rounded-full text-xs font-semibold gap-1.5 h-8 px-3"
-            >
-              <Info className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Instructions</span>
-            </Button>
-
-            {isHourly && (
+            <div className="flex items-center gap-2 shrink-0">
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={stopping || submitting}
-                onClick={handleStop}
-                className="rounded-full text-xs font-semibold h-8 px-3 gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+                onClick={() => {
+                  setInstructionsOpen(true);
+                  guidelinesRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+                aria-controls="task-guidelines-panel"
+                className="rounded-full text-xs font-semibold gap-1.5 h-8 px-3"
               >
-                {stopping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
-                <span>Stop</span>
+                <Info className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Instructions</span>
               </Button>
-            )}
 
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={releasing || submitting}
-              onClick={handleRelease}
-              className="rounded-full text-xs font-semibold text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 px-3 gap-1.5"
-            >
-              {releasing ? <Loader2 className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
-              <span className="hidden sm:inline">Release</span>
-            </Button>
+              {isPreview && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={preview!.onExit}
+                  className="rounded-full text-xs font-semibold h-8 px-3 gap-1.5"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>Exit preview</span>
+                </Button>
+              )}
+
+              {isHourly && !isPreview && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={stopping || submitting}
+                  onClick={handleStop}
+                  className="rounded-full text-xs font-semibold h-8 px-3 gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/10"
+                >
+                  {stopping ? <Loader2 className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3 fill-current" />}
+                  <span>Stop</span>
+                </Button>
+              )}
+
+              {!isPreview && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={releasing || submitting}
+                onClick={handleRelease}
+                className="rounded-full text-xs font-semibold text-muted-foreground hover:text-destructive hover:bg-destructive/10 h-8 px-3 gap-1.5"
+              >
+                {releasing ? <Loader2 className="h-3 w-3 animate-spin" /> : <LogOut className="h-3 w-3" />}
+                <span className="hidden sm:inline">Release</span>
+              </Button>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-t border-border/60">
-          {/* Compensation */}
-          <span className="inline-flex items-center h-7 text-xs font-mono font-bold px-3 rounded-full bg-[#E5EFEC] text-[#0F766E] border border-[#0F766E]/20 whitespace-nowrap">
-            {isHourly ? `${formatCents(rateCents)} / completed hour` : `${formatCents(rateCents)} on approval`}
-          </span>
-
-          {/* Server work clock */}
-          <span
-            title={clockState.label}
-            className={`inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-mono font-bold border whitespace-nowrap ${
-              clockState.tone === "run"
-                ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/25"
-                : clockState.tone === "pause"
-                ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]"
-                : "bg-destructive/10 text-destructive border-destructive/20"
-            }`}
-          >
+          {/* Status chips: two per row on phones (two lines), natural width from sm up */}
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-t border-border/60 [&>span]:min-w-0 [&>span]:basis-[calc(50%-0.25rem)] [&>span]:justify-center sm:[&>span]:basis-auto sm:[&>span]:justify-start">
+            {/* Compensation */}
             <span
-              className={`w-2 h-2 rounded-full shrink-0 ${
-                clockState.tone === "run"
-                  ? "bg-[#0F766E] animate-pulse"
-                  : clockState.tone === "pause"
-                  ? "bg-amber-500"
-                  : "bg-destructive"
-              }`}
-            />
-            {isHourly ? (
-              <span>
-                Today {formatClock(clock.sessionSeconds)} · Task {formatClock(clock.itemSeconds)}
+              title={isHourly ? `${formatCents(rateCents)} per completed hour` : `${formatCents(rateCents)} on approval`}
+              className="inline-flex items-center h-7 text-[11px] sm:text-xs font-mono font-bold px-2.5 sm:px-3 rounded-full bg-[#E5EFEC] text-[#0F766E] border border-[#0F766E]/20 whitespace-nowrap"
+            >
+              <span className="truncate">
+                {isHourly ? (
+                  <>
+                    {formatCents(rateCents)} /<span className="sm:hidden"> hr</span>
+                    <span className="hidden sm:inline"> completed hour</span>
+                  </>
+                ) : (
+                  `${formatCents(rateCents)} on approval`
+                )}
               </span>
-            ) : (
-              <span>Time {formatClock(clock.itemSeconds)}</span>
-            )}
-          </span>
+            </span>
 
-          {/* Claim hold countdown */}
-          <span
-            title="Time left before this task returns to the queue"
-            className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-xs font-mono font-bold border whitespace-nowrap transition-colors ${
-              isExpired
-                ? "bg-destructive/10 text-destructive border-destructive/20"
-                : isUrgent
-                ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A] animate-pulse"
-                : "bg-muted text-muted-foreground border-border"
-            }`}
-          >
-            <Clock className="h-3.5 w-3.5 shrink-0" />
-            <span>Hold {formatCountdown(timeLeftMs)}</span>
-          </span>
+            {/* Server work clock */}
+            <span
+              title={
+                isHourly
+                  ? `${clockState.label}. Today ${formatClock(clock.sessionSeconds)}, this task ${formatClock(clock.itemSeconds)}`
+                  : clockState.label
+              }
+              className={`inline-flex items-center gap-2 h-7 px-2.5 sm:px-3 rounded-full text-[11px] sm:text-xs font-mono font-bold border whitespace-nowrap ${
+                clockState.tone === "run"
+                  ? "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/25"
+                  : clockState.tone === "pause"
+                  ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A]"
+                  : "bg-destructive/10 text-destructive border-destructive/20"
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  clockState.tone === "run"
+                    ? "bg-[#0F766E] animate-pulse"
+                    : clockState.tone === "pause"
+                    ? "bg-amber-500"
+                    : "bg-destructive"
+                }`}
+              />
+              {isPreview ? (
+                <span className="truncate">Clock off</span>
+              ) : isHourly ? (
+                <span className="truncate">
+                  <span className="hidden sm:inline">Today </span>
+                  {formatClock(clock.sessionSeconds)} ·<span className="hidden sm:inline"> Task</span>{" "}
+                  {formatClock(clock.itemSeconds)}
+                </span>
+              ) : (
+                <span className="truncate">Time {formatClock(clock.itemSeconds)}</span>
+              )}
+            </span>
 
-          {/* Draft status */}
-          <span
-            className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-[11px] font-semibold border whitespace-nowrap ${
-              saveState === "error"
-                ? "bg-destructive/10 text-destructive border-destructive/20"
-                : "bg-muted/40 text-muted-foreground border-border"
-            }`}
-          >
-            {saveState === "saving" ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : saveState === "error" ? (
-              <CloudOff className="h-3 w-3" />
-            ) : (
-              <CloudCheck className="h-3 w-3" />
-            )}
-            {saveState === "saving"
-              ? "Saving…"
-              : saveState === "error"
-              ? "Not saved, retrying"
-              : savedAt
-              ? `Saved at ${new Date(savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-              : "Draft not saved yet"}
-          </span>
+            {/* Claim hold countdown */}
+            <span
+              title="Time left before this task returns to the queue"
+              className={`inline-flex items-center gap-1.5 h-7 px-2.5 sm:px-3 rounded-full text-[11px] sm:text-xs font-mono font-bold border whitespace-nowrap transition-colors ${
+                isExpired
+                  ? "bg-destructive/10 text-destructive border-destructive/20"
+                  : isUrgent
+                  ? "bg-[#FEF3C7] text-[#B45309] border-[#FDE68A] animate-pulse"
+                  : "bg-muted text-muted-foreground border-border"
+              }`}
+            >
+              <Clock className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">Hold {formatCountdown(timeLeftMs)}</span>
+            </span>
+
+            {/* Draft status */}
+            <span
+              role="status"
+              className={`inline-flex items-center gap-1.5 h-7 px-2.5 sm:px-3 rounded-full text-[11px] font-semibold border whitespace-nowrap ${
+                saveState === "error"
+                  ? "bg-destructive/10 text-destructive border-destructive/20"
+                  : "bg-muted/40 text-muted-foreground border-border"
+              }`}
+            >
+              {isPreview ? (
+                <Eye className="h-3 w-3 shrink-0" />
+              ) : saveState === "saving" ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : saveState === "error" ? (
+                <CloudOff className="h-3 w-3" />
+              ) : (
+                <CloudCheck className="h-3 w-3 shrink-0" />
+              )}
+              <span className="truncate">
+                {isPreview
+                  ? "Preview: nothing is saved"
+                  : saveState === "saving"
+                  ? "Saving…"
+                  : saveState === "error"
+                  ? "Not saved, retrying"
+                  : savedAt
+                  ? `Saved at ${new Date(savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                  : "Draft not saved yet"}
+              </span>
+            </span>
+          </div>
         </div>
       </div>
 
       {/* Clock pause banner */}
-      {clockState.tone !== "run" && clock.paused !== "needs_presence" && clock.paused !== "lost_claim" && (
+      {isPreview && (
+        <div className="mb-3 flex items-center gap-2.5 p-3 rounded-xl text-xs border bg-primary/5 border-primary/20 text-foreground">
+          <Eye className="h-4 w-4 shrink-0 text-primary" />
+          <span>
+            Preview as contributor. Answers stay in this window: no drafts or submissions are saved and the work
+            clock does not run.
+          </span>
+        </div>
+      )}
+
+      {!isPreview && clockState.tone !== "run" && clock.paused !== "needs_presence" && clock.paused !== "lost_claim" && (
         <div
-          className={`flex items-center gap-2.5 p-3 rounded-xl text-xs border ${
+          className={`mb-3 flex items-center gap-2.5 p-3 rounded-xl text-xs border ${
             clockState.tone === "pause"
               ? "bg-[#FEF3C7] border-[#FDE68A] text-[#78350F]"
               : "bg-destructive/10 border-destructive/20 text-destructive"
@@ -502,8 +584,8 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
       )}
 
       {/* Expired Warning Banner */}
-      {isExpired && (
-        <div className="flex items-center gap-2.5 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
+      {isExpired && !isPreview && (
+        <div className="mb-3 flex items-center gap-2.5 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>
             Your claim timer has expired. Your submission will still be accepted unless another contributor claims this task first.
@@ -511,38 +593,61 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
         </div>
       )}
 
-      {/* Collapsible Instructions Card */}
-      <div className="bg-card rounded-[14px] border border-border shadow-2xs overflow-hidden">
+      {/* Task guidelines: in normal flow below the sticky header, never overlapping it */}
+      <section
+        ref={guidelinesRef}
+        aria-label="Task guidelines"
+        className="relative z-0 mt-0 scroll-mt-[var(--work-header-h)] bg-card rounded-[14px] border border-border shadow-2xs overflow-hidden"
+      >
         <button
           type="button"
           onClick={() => setInstructionsOpen(!instructionsOpen)}
           aria-expanded={instructionsOpen}
-          className="touch-target w-full flex items-center justify-between p-4 text-left hover:bg-muted/30 transition-colors"
+          aria-controls="task-guidelines-panel"
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left min-h-[44px] hover:bg-muted/30 transition-colors"
         >
-          <div className="flex items-center gap-2.5">
-            <Info className="h-4 w-4 text-primary shrink-0" />
-            <span className="font-heading text-sm font-bold text-foreground">
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Info className="h-4 w-4 shrink-0 text-primary" />
+            <span className="min-w-0 truncate font-heading text-sm font-bold text-foreground">
               Task Guidelines & Instructions
             </span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-primary font-semibold">
-            <span>{instructionsOpen ? "Collapse" : "Expand"}</span>
-            {instructionsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </div>
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-sm font-semibold text-primary">
+            {instructionsOpen ? "Collapse" : "Expand"}
+            <ChevronDown
+              aria-hidden
+              className={`h-4 w-4 transition-transform duration-200 ${instructionsOpen ? "rotate-180" : ""}`}
+            />
+          </span>
         </button>
 
-        {instructionsOpen && (
-          <div className="p-4 pt-3 border-t border-border/60 text-xs sm:text-sm text-muted-foreground leading-relaxed font-sans bg-muted/10 animate-in fade-in-0 duration-150">
-            <SimpleMarkdown
-              text={task.instructions || task.description || "Follow benchmark guidelines carefully. Evaluate each field accurately."}
-            />
+        <div
+          id="task-guidelines-panel"
+          role="region"
+          aria-label="Task guidelines and instructions"
+          inert={!instructionsOpen}
+          className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+            instructionsOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+          }`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <div className="p-4 pt-3 border-t border-border/60 text-xs sm:text-sm text-muted-foreground leading-relaxed font-sans bg-muted/10">
+              <SimpleMarkdown
+                text={task.instructions || task.description || "Follow benchmark guidelines carefully. Evaluate each field accurately."}
+              />
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      </section>
 
-      {/* Stepper (multi-part forms) */}
+      {/* Stepper (multi-part forms): starts 16px below the guidelines */}
       {isMultiPart && (
-        <nav aria-label="Form steps" className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        <nav
+          ref={stepperRef}
+          id="form-steps"
+          aria-label="Form steps"
+          className="mt-4 scroll-mt-[var(--work-header-h)] grid grid-cols-2 lg:grid-cols-4 gap-2"
+        >
           {stepParts.map((p, i) => {
             const st = progress.find((x) => x.id === p.id)!;
             const active = p.id === currentPart.id;
@@ -596,14 +701,14 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
       )}
 
       {/* 2-Column Split: the case for this step, and the form */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
-        {/* Left Column: The case (Stacked first on mobile, Sticky on desktop) */}
-        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-56 max-h-[calc(100dvh-15rem)] overflow-y-auto min-w-0 max-w-full">
-          <CasePane item={item} part={currentPart} isMultiPart={isMultiPart} />
+      <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
+        {/* Left Column: The case (stacked first on mobile, sticky below the header on desktop) */}
+        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 scroll-mt-[var(--work-header-h)] lg:sticky lg:top-[calc(var(--work-header-h)+0.25rem)] max-h-[calc(100dvh-var(--work-header-h)-1.5rem)] overflow-y-auto min-w-0 max-w-full">
+          <CasePane item={item} part={currentPart} parts={stepParts} isMultiPart={isMultiPart} />
         </div>
 
         {/* Right Column: The form for the current step */}
-        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-5 min-w-0">
+        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-5 min-w-0 scroll-mt-[var(--work-header-h)]">
           <div className="pb-3 border-b border-border/60 space-y-1">
             {isMultiPart && (
               <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
@@ -629,7 +734,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
                       <tr key={r.score} className="border-t border-border/50 align-top">
                         <td className="py-1.5 pr-2 font-bold font-mono">{r.score}</td>
                         <td className="py-1.5 pr-3 font-semibold text-foreground whitespace-nowrap">{r.label}</td>
-                        {usesClinicalScale && <td className="py-1.5 text-muted-foreground">{r.meaning}</td>}
+                        {scaleHasMeanings && <td className="py-1.5 text-muted-foreground">{r.meaning}</td>}
                       </tr>
                     ))}
                   </tbody>
@@ -696,7 +801,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
                 ) : (
                   <Button
                     type="submit"
-                    disabled={submitting || !allComplete}
+                    disabled={submitting || !allComplete || isPreview}
                     className="hidden lg:inline-flex rounded-full text-xs font-bold gap-2 h-10 px-6 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs"
                   >
                     {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
@@ -733,7 +838,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
           <Button
             type="button"
             onClick={() => handleSubmit()}
-            disabled={submitting || !allComplete}
+            disabled={submitting || !allComplete || isPreview}
             className="touch-target rounded-full text-xs font-bold gap-2 px-5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs min-h-[44px]"
           >
             {submitting ? (
@@ -837,7 +942,7 @@ export function WorkInterface({ task, item, rateCents, draft = null }: WorkInter
 
       {/* Presence check (hourly) */}
       <ResponsiveDialog
-        open={clock.paused === "needs_presence"}
+        open={!isPreview && clock.paused === "needs_presence"}
         onOpenChange={() => {}}
         title="Still working?"
         description="The clock is paused. Confirm you are still here to keep counting time."
@@ -874,16 +979,31 @@ function stepShortTitle(part: Part, index: number) {
   return known[part.id] ?? (part.title.length > 28 ? `Step ${index + 1}` : part.title);
 }
 
-/** The case for the current step: only the payload keys the step lists in `show`. */
-function CasePane({ item, part, isMultiPart }: { item: WorkItem; part: Part; isMultiPart: boolean }) {
+/**
+ * The case for the current step, driven by the step's `show` list: those payload keys, in that
+ * order. A key that some other step shows (say response_b during Part 1) stays hidden so each
+ * evaluation is independent; a key no step mentions (extra context) is always shown.
+ */
+function CasePane({
+  item,
+  part,
+  parts,
+  isMultiPart,
+}: {
+  item: WorkItem;
+  part: Part;
+  parts: Part[];
+  isMultiPart: boolean;
+}) {
   const payload = (item.payload || {}) as Record<string, unknown>;
-  // During a step, hide only the response(s) the step doesn't list, so each
-  // evaluation stays independent; any other case content is always shown.
-  const hidden =
+  const mentioned = new Set(parts.flatMap((p) => p.show ?? []));
+  const keys =
     isMultiPart && part.show?.length
-      ? ["response_a", "response_b"].filter((k) => !part.show!.includes(k))
-      : [];
-  const keys = Object.keys(payload).filter((k) => !hidden.includes(k));
+      ? [
+          ...part.show.filter((k) => k in payload),
+          ...Object.keys(payload).filter((k) => !mentioned.has(k)),
+        ]
+      : Object.keys(payload);
   const hasPair = keys.includes("response_a") && keys.includes("response_b");
   const caseId = typeof payload.case_id === "string" ? payload.case_id : null;
 

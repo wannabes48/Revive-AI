@@ -21,7 +21,7 @@ export type ClockPause =
  * display ticks forward locally while running, and is replaced by the server's
  * figure on every beat.
  */
-export function useWorkClock(itemId: string) {
+export function useWorkClock(itemId: string, enabled = true) {
   const [itemSeconds, setItemSeconds] = useState(0);
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [paused, setPaused] = useState<ClockPause>(null);
@@ -30,6 +30,8 @@ export function useWorkClock(itemId: string) {
   const beatRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
+    // Preview mode: no heartbeats, so no time is ever counted.
+    if (!enabled) return;
     lastInput.current = Date.now();
     const mark = () => {
       lastInput.current = Date.now();
@@ -61,7 +63,7 @@ export function useWorkClock(itemId: string) {
       clearInterval(id);
       events.forEach((e) => window.removeEventListener(e, mark));
     };
-  }, [itemId]);
+  }, [itemId, enabled]);
 
   // Local display tick between beats (never sent to the server).
   useEffect(() => {

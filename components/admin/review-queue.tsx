@@ -321,10 +321,11 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
           </div>
 
           {/* Consistency flags and sign-off status */}
-          {current.answers?.s_review_status === "Requires senior clinical review" && (
+          {typeof current.answers?.s_review_status === "string" &&
+            current.answers.s_review_status.startsWith("Requires senior") && (
             <div className="flex items-start gap-2.5 p-3.5 rounded-xl border border-destructive/30 bg-destructive/10 text-destructive text-xs font-semibold">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>The evaluator marked this case as requiring senior clinical review.</span>
+              <span>The evaluator marked this case as &quot;{current.answers.s_review_status}&quot;.</span>
             </div>
           )}
           {Array.isArray(current.flags) && current.flags.length > 0 && (

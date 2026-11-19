@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PARTS as RUBRIC_PARTS } from "@/lib/rubrics/clinical-ai-evaluation";
+import { PAIRWISE_PARTS as RUBRIC_PARTS } from "./rubrics/build-pairwise-form";
 
 type Base = {
   id: string;

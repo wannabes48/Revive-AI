@@ -3,9 +3,9 @@
 import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { buildAnswersSchema } from "@/lib/item-schema";
+import { buildAnswersSchema, type Field } from "@/lib/item-schema";
 import { mapRpcError } from "@/lib/rpc-errors";
-import { clinicalFlags } from "@/lib/rubrics/clinical-ai-evaluation";
+import { formFlags } from "@/lib/rubrics";
 
 /**
  * Starts work on a task: for hourly tasks this starts (or resumes) the server
@@ -63,7 +63,7 @@ export async function submitWork(taskId: string, itemId: string, answers: unknow
   }
 
   // Soft consistency warnings, recomputed on the server so they can't be skipped.
-  const flags = clinicalFlags(parsed.data as Record<string, unknown>);
+  const flags = formFlags(task.item_schema as Field[], parsed.data as Record<string, unknown>);
   if (flags.length > 0 && submissionId) {
     const { error: flagError } = await createAdminClient()
       .from("submissions")

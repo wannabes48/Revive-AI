@@ -220,7 +220,7 @@ export function EarningsView({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border/60">
         <div>
           <h1 className="font-heading text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-            Earnings & Wallet
+            Earnings
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
             What you&apos;re owed, what you&apos;ve been paid, and how you earned it.

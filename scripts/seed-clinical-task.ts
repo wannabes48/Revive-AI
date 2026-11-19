@@ -3,11 +3,10 @@
 //
 //   npx tsx --env-file=.env.local scripts/seed-clinical-task.ts
 //
-// Safe to run repeatedly: run it again whenever lib/rubrics/clinical-ai-evaluation.ts changes.
+// Safe to run repeatedly: run it again whenever lib/rubrics/clinical.ts changes.
 // Requires migrations 013 and 014.
-import { createClient } from "@supabase/supabase-js";
-import { TASK_FORM } from "../lib/rubrics/clinical-ai-evaluation";
-import { checkForm } from "../lib/item-schema";
+import { CLINICAL_TASK_FORM as TASK_FORM } from "../lib/rubrics/clinical";
+import { adminClient, saveTaskForm } from "./lib/save-task-form";
 
 const SLUG = "medical-qa-review";
 const BATCH = "Clinical rubric samples (draft)";
@@ -28,30 +27,17 @@ const CASES = [
     response_b: "This is most likely a pulled muscle or stress. Try gentle stretching, avoid stairs for a week and use a heat pack. If it is still happening after a month, see your doctor." },
 ];
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!url || !key) throw new Error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (use --env-file=.env.local).");
-
-const supabase = createClient(url, key, { auth: { persistSession: false } });
+const supabase = adminClient();
 
 async function main() {
-  const problems = checkForm(TASK_FORM.item_schema, TASK_FORM.item_parts);
-  if (problems.length) throw new Error(`The form is not valid:\n${problems.join("\n")}`);
-
-  const { data: task, error: findError } = await supabase.from("tasks").select("id").eq("slug", SLUG).single();
-  if (findError || !task) throw new Error(`Task "${SLUG}" not found. Create it (or run the section 63 seed) first.`);
-
-  const { error: updateError } = await supabase
-    .from("tasks")
-    .update({
-      title: "Clinical AI Response Evaluation",
-      summary: "Evaluate two AI responses to a clinical question on their own, then compare them head to head.",
-      description:
-        "You will read a clinical question and two AI responses. Rate and critique each response independently, then compare them and sign off. Clinical, nursing, pharmacy or medical background preferred.",
-      ...TASK_FORM,
-    })
-    .eq("id", task.id);
-  if (updateError) throw updateError;
+  // Validates with checkForm and refuses to save a broken form.
+  const taskId = await saveTaskForm(supabase, SLUG, TASK_FORM, {
+    title: "Clinical AI Response Evaluation",
+    summary: "Evaluate two AI responses to a clinical question on their own, then compare them head to head.",
+    description:
+      "You will read a clinical question and two AI responses. Rate and critique each response independently, then compare them and sign off. Clinical, nursing, pharmacy or medical background preferred.",
+  });
+  const task = { id: taskId };
 
   // Old sample items do not fit the new form. Only draft batches are removed.
   const { data: old } = await supabase
