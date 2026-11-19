@@ -105,6 +105,8 @@ export interface Task {
   // Migration 013
   max_credited_seconds_per_item?: number;
   auto_approve_hourly?: boolean;
+  // Migration 014: steps of a multi-part answer form
+  item_parts?: import("@/lib/item-schema").Part[];
 }
 
 export interface Application {
@@ -164,6 +166,7 @@ export interface Submission {
   answers: Record<string, any>;
   seconds_spent: number | null;
   credited_seconds?: number | null;
+  flags?: string[] | null;
   status: SubmissionStatus;
   score: number | null;
   reviewer_id: string | null;

@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, TaskStatus, PayModel } from "@/lib/supabase/types";
-import { Field } from "@/lib/item-schema";
+import { type Field, type Part, checkForm, resolveParts } from "@/lib/item-schema";
 import { createTask, updateTask } from "@/actions/tasks";
 import { slugify, formatCents } from "@/lib/utils";
 import { CATEGORIES } from "@/lib/constants";
@@ -112,6 +112,29 @@ export function TaskForm({ task, isEdit }: TaskFormProps) {
   });
   const [schemaError, setSchemaError] = React.useState<string | null>(null);
 
+  // Steps of a multi-part form (optional; empty = single page)
+  const [partsText, setPartsText] = React.useState(() => {
+    // Prefill from the fields' part names when the task has no steps saved yet,
+    // so saving the form stores them.
+    const existing = resolveParts(
+      Array.isArray(task?.item_schema) ? (task!.item_schema as Field[]) : [],
+      task?.item_parts
+    );
+    return existing.length > 0 ? JSON.stringify(existing, null, 2) : "[]";
+  });
+  const parsedParts: Part[] | null = React.useMemo(() => {
+    try {
+      const v = JSON.parse(partsText || "[]");
+      return Array.isArray(v) ? (v as Part[]) : null;
+    } catch {
+      return null;
+    }
+  }, [partsText]);
+  const formProblems = React.useMemo(
+    () => (schemaError || parsedParts === null ? [] : checkForm(parsedSchema, parsedParts)),
+    [schemaError, parsedParts, parsedSchema]
+  );
+
   function handleTitleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const newTitle = e.target.value;
     setTitle(newTitle);
@@ -145,9 +168,20 @@ export function TaskForm({ task, isEdit }: TaskFormProps) {
       setLoading(false);
       return;
     }
+    if (parsedParts === null) {
+      toast.error("Steps (item_parts) must be a JSON array.");
+      setLoading(false);
+      return;
+    }
+    if (formProblems.length > 0) {
+      toast.error("The answer form has problems", { description: formProblems.slice(0, 3).join(" ") });
+      setLoading(false);
+      return;
+    }
 
     const formData = new FormData(e.currentTarget);
     formData.set("item_schema", schemaText);
+    formData.set("item_parts", partsText || "[]");
 
     let result;
     if (isEdit && task) {
@@ -540,12 +574,38 @@ export function TaskForm({ task, isEdit }: TaskFormProps) {
                 <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-xs font-mono">
                   {schemaError}
                 </div>
+              ) : formProblems.length > 0 ? (
+                <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-[11px] space-y-0.5 max-h-32 overflow-y-auto">
+                  {formProblems.map((p) => (
+                    <div key={p}>{p}</div>
+                  ))}
+                </div>
               ) : (
                 <div className="text-[11px] text-[#0F766E] flex items-center gap-1 font-semibold">
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  <span>Valid schema: {parsedSchema.length} fields configured</span>
+                  <span>
+                    Valid form: {parsedSchema.length} fields
+                    {parsedParts && parsedParts.length > 0 ? ` in ${parsedParts.length} steps` : ""}
+                  </span>
                 </div>
               )}
+
+              <div className="space-y-1 pt-2">
+                <span className="text-xs font-semibold text-foreground">Steps (item_parts, optional)</span>
+                <Textarea
+                  rows={5}
+                  value={partsText}
+                  onChange={(e) => setPartsText(e.target.value)}
+                  className="font-mono text-xs rounded-lg border-border bg-muted/20 leading-relaxed"
+                />
+                <span className="text-[10px] text-muted-foreground block">
+                  Leave as [] for a single-page form. Each step needs id and title; fields name their step with
+                  &quot;part&quot;.
+                </span>
+                {parsedParts === null && (
+                  <span className="text-[11px] text-destructive font-semibold">Steps must be a JSON array.</span>
+                )}
+              </div>
             </div>
 
             {/* Live Form Preview */}

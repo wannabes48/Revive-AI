@@ -3,6 +3,28 @@
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { taskSchema } from "@/lib/validators";
+import { checkForm, type Field, type Part } from "@/lib/item-schema";
+
+/** Parses item_parts from the form (absent = leave unchanged) and validates the whole form. */
+function readFormParts(formData: FormData, itemSchema: unknown): { parts?: Part[]; error?: string } {
+  const raw = formData.get("item_parts");
+  let parts: Part[] | undefined;
+  if (typeof raw === "string") {
+    try {
+      const v = JSON.parse(raw.trim() || "[]");
+      if (!Array.isArray(v)) return { error: "Steps (item_parts) must be a JSON array." };
+      parts = v as Part[];
+    } catch {
+      return { error: "Steps (item_parts) is not valid JSON." };
+    }
+  }
+  const fields = Array.isArray(itemSchema) ? (itemSchema as Field[]) : [];
+  if (fields.length > 0) {
+    const problems = checkForm(fields, parts ?? []);
+    if (problems.length > 0) return { error: `Answer form: ${problems.slice(0, 3).join(" ")}` };
+  }
+  return { parts };
+}
 import { TaskStatus } from "@/lib/supabase/types";
 import { after } from "next/server";
 import { notifyTaskOpened } from "@/lib/emails/automation";
@@ -86,10 +108,15 @@ export async function createTask(formData: FormData): Promise<TaskActionResult> 
     return { error: parsed.error.issues[0]?.message || "Validation failed." };
   }
 
+  // Answer form + steps: refuse broken forms before they reach contributors.
+  const formCheck = readFormParts(formData, parsed.data.item_schema);
+  if (formCheck.error) return { error: formCheck.error };
+
   const { data, error } = await supabase
     .from("tasks")
     .insert({
       ...parsed.data,
+      ...(formCheck.parts !== undefined ? { item_parts: formCheck.parts } : {}),
       created_by: user.id,
     })
     .select("id")
@@ -173,10 +200,15 @@ export async function updateTask(id: string, formData: FormData): Promise<TaskAc
     return { error: parsed.error.issues[0]?.message || "Validation failed." };
   }
 
+  // Answer form + steps: refuse broken forms before they reach contributors.
+  const formCheck = readFormParts(formData, parsed.data.item_schema);
+  if (formCheck.error) return { error: formCheck.error };
+
   const { error } = await supabase
     .from("tasks")
     .update({
       ...parsed.data,
+      ...(formCheck.parts !== undefined ? { item_parts: formCheck.parts } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq("id", id);

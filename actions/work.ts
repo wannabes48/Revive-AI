@@ -1,10 +1,11 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient, createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { buildAnswersSchema } from "@/lib/item-schema";
 import { mapRpcError } from "@/lib/rpc-errors";
+import { clinicalFlags } from "@/lib/rubrics/clinical-ai-evaluation";
 
 /**
  * Starts work on a task: for hourly tasks this starts (or resumes) the server
@@ -52,7 +53,7 @@ export async function submitWork(taskId: string, itemId: string, answers: unknow
   }
 
   // The browser sends no time: the server stores its own count.
-  const { error } = await supabase.rpc("submit_work", {
+  const { data: submissionId, error } = await supabase.rpc("submit_work", {
     p_item_id: itemId,
     p_answers: parsed.data,
   });
@@ -61,11 +62,35 @@ export async function submitWork(taskId: string, itemId: string, answers: unknow
     return { error: mapRpcError(error.message) };
   }
 
+  // Soft consistency warnings, recomputed on the server so they can't be skipped.
+  const flags = clinicalFlags(parsed.data as Record<string, unknown>);
+  if (flags.length > 0 && submissionId) {
+    const { error: flagError } = await createAdminClient()
+      .from("submissions")
+      .update({ flags })
+      .eq("id", submissionId as string);
+    if (flagError) console.warn("Could not store submission flags:", flagError.message);
+  }
+
   revalidatePath(`/work/${task.slug}`);
   revalidatePath("/dashboard");
   revalidatePath("/work");
   revalidatePath("/earnings");
   return { success: true };
+}
+
+/** Saves the contributor's unsent answers on the server. Returns when it was saved. */
+export async function saveDraft(itemId: string, answers: Record<string, unknown>) {
+  const supabase = await createClient();
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+    return { error: "Invalid draft." };
+  }
+  const { data, error } = await supabase.rpc("save_draft", { p_item_id: itemId, p_answers: answers });
+  if (error) {
+    if (error.message.includes("draft_too_large")) return { error: "Your draft is too large to save." };
+    return { error: mapRpcError(error.message) };
+  }
+  return { savedAt: (data as string | null) ?? new Date().toISOString() };
 }
 
 export async function heartbeat(itemId: string, active: boolean) {

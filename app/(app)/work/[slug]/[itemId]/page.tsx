@@ -58,12 +58,21 @@ export default async function WorkItemPage({ params }: WorkItemPageProps) {
 
   const effectiveRate = application?.rate_cents ?? task.rate_cents ?? 0;
 
+  // Server-saved draft (migration 014); missing table just means no draft.
+  const { data: draftRow } = await supabase
+    .from("work_drafts")
+    .select("answers, updated_at")
+    .eq("work_item_id", item.id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
   return (
     <div className="max-w-6xl mx-auto">
       <WorkInterface
         task={task as Task}
         item={item as WorkItem}
         rateCents={effectiveRate}
+        draft={draftRow ? { answers: (draftRow.answers || {}) as Record<string, unknown>, updatedAt: draftRow.updated_at } : null}
       />
     </div>
   );

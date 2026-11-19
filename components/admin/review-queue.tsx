@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Submission, Task } from "@/lib/supabase/types";
-import { Field } from "@/lib/item-schema";
+import { type Field, groupRuns, resolveParts } from "@/lib/item-schema";
 import { reviewSubmission } from "@/actions/admin-work";
 import { formatDate, formatDateTime, formatCents } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
@@ -190,6 +190,11 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
   const fields: Field[] = current?.task?.item_schema && Array.isArray(current.task.item_schema)
     ? current.task.item_schema
     : [];
+  const reviewParts = resolveParts(fields, current?.task?.item_parts);
+  const answerSections: { id: string; title: string | null; fields: Field[] }[] =
+    reviewParts.length > 0
+      ? reviewParts.map((p) => ({ id: p.id, title: p.title, fields: fields.filter((f) => f.part === p.id) }))
+      : [{ id: "all", title: null, fields }];
 
   return (
     <div className="space-y-6">
@@ -315,6 +320,27 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
             </button>
           </div>
 
+          {/* Consistency flags and sign-off status */}
+          {current.answers?.s_review_status === "Requires senior clinical review" && (
+            <div className="flex items-start gap-2.5 p-3.5 rounded-xl border border-destructive/30 bg-destructive/10 text-destructive text-xs font-semibold">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>The evaluator marked this case as requiring senior clinical review.</span>
+            </div>
+          )}
+          {Array.isArray(current.flags) && current.flags.length > 0 && (
+            <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-900 dark:text-amber-200 text-xs space-y-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                Consistency warnings shown to the evaluator before submit
+              </span>
+              <ul className="list-disc pl-6 space-y-0.5">
+                {current.flags.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Three-Pane View */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
             {/* PANE 1: The Item Payload (4 cols) */}
@@ -370,44 +396,26 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
                 </div>
               </div>
 
-              <div className="space-y-4 text-xs min-w-0">
-                {fields.map((f) => {
-                  const val = current.answers[f.id];
-
-                  return (
-                    <div key={f.id} className="space-y-1 min-w-0">
-                      <span className="text-[11px] font-bold text-foreground block break-words">
-                        {f.label}
-                      </span>
-
-                      <div className="overflow-x-auto min-w-0 max-w-full p-3 rounded-xl bg-muted/20 border border-border/60 text-foreground leading-relaxed break-words">
-                        {f.type === "rating" ? (
-                          <div className="flex items-center gap-1 font-bold text-sm text-primary">
-                            <Star className="h-4 w-4 fill-primary" />
-                            <span>{val} / {f.max}</span>
-                          </div>
-                        ) : f.type === "boolean" ? (
-                          <span className={`font-bold ${val ? "text-[#0F766E]" : "text-destructive"}`}>
-                            {val ? "Yes / True" : "No / False"}
-                          </span>
-                        ) : f.type === "multiselect" && Array.isArray(val) ? (
-                          <div className="flex flex-wrap gap-1">
-                            {val.map((item: string) => (
-                              <span
-                                key={item}
-                                className="px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 text-[10px] font-semibold"
-                              >
-                                {item}
-                              </span>
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="whitespace-pre-wrap">{val != null ? String(val) : "—"}</span>
+              <div className="space-y-5 text-xs min-w-0">
+                {answerSections.map((section) => (
+                  <div key={section.id} className="space-y-3 min-w-0">
+                    {section.title && (
+                      <h4 className="font-heading text-[11px] font-bold uppercase tracking-wider text-primary pt-3 border-t border-border/60 first:border-0 first:pt-0">
+                        {section.title}
+                      </h4>
+                    )}
+                    {groupRuns(section.fields).map((run, ri) => (
+                      <div key={`${section.id}-${ri}`} className="space-y-2.5 min-w-0">
+                        {run.group && (
+                          <span className="block text-[11px] font-bold text-muted-foreground">{run.group}</span>
                         )}
+                        {run.fields.map((f) => (
+                          <AnswerValue key={f.id} field={f} value={current.answers[f.id]} />
+                        ))}
                       </div>
-                    </div>
-                  );
-                })}
+                    ))}
+                  </div>
+                ))}
 
                 {fields.length === 0 && (
                   <div className="overflow-x-auto p-3 rounded-xl bg-muted/20 border border-border/60 font-mono text-[11px] whitespace-pre">
@@ -641,6 +649,53 @@ export function ReviewQueue({ submissions: initialSubmissions, tasks }: ReviewQu
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/** One submitted answer, shown read-only to the reviewer. */
+function AnswerValue({ field, value }: { field: Field; value: unknown }) {
+  let content: React.ReactNode;
+  if (value === undefined || value === null || value === "") {
+    content = <span className="text-muted-foreground">—</span>;
+  } else if (field.type === "rating") {
+    const label = field.scaleLabels?.[Number(value) - field.min];
+    content = (
+      <div className="flex items-center gap-1 font-bold text-sm text-primary">
+        <Star className="h-4 w-4 fill-primary" />
+        <span>
+          {String(value)} / {field.max}
+          {label ? ` · ${label}` : ""}
+        </span>
+      </div>
+    );
+  } else if (field.type === "boolean") {
+    content = (
+      <span className={`font-bold ${value ? "text-destructive" : "text-[#0F766E]"}`}>{value ? "Yes" : "No"}</span>
+    );
+  } else if (field.type === "multiselect" && Array.isArray(value)) {
+    content = (
+      <div className="flex flex-wrap gap-1">
+        {value.map((item: string) => (
+          <span
+            key={item}
+            className="px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 text-[10px] font-semibold"
+          >
+            {item}
+          </span>
+        ))}
+      </div>
+    );
+  } else {
+    content = <span className="whitespace-pre-wrap">{String(value)}</span>;
+  }
+
+  return (
+    <div className="space-y-1 min-w-0">
+      <span className="text-[11px] font-bold text-foreground block break-words">{field.label}</span>
+      <div className="overflow-x-auto min-w-0 max-w-full p-3 rounded-xl bg-muted/20 border border-border/60 text-foreground leading-relaxed break-words">
+        {content}
+      </div>
     </div>
   );
 }

@@ -4,15 +4,15 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Task, WorkItem } from "@/lib/supabase/types";
-import { Field } from "@/lib/item-schema";
-import { submitWork, releaseItem, startWorking, stopWorking, confirmPresence } from "@/actions/work";
+import { type Field, type Part, buildAnswersSchema, groupRuns, partProgress, resolveParts } from "@/lib/item-schema";
+import { clinicalFlags, RATING_LABELS } from "@/lib/rubrics/clinical-ai-evaluation";
+import { submitWork, releaseItem, startWorking, stopWorking, confirmPresence, saveDraft } from "@/actions/work";
+import { AnswerField } from "@/components/work/answer-field";
+import { SimpleMarkdown } from "@/components/work/simple-markdown";
 import { useWorkClock, formatClock } from "@/hooks/use-work-clock";
 import { formatCents } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   ResponsiveDialog,
 } from "@/components/ui/responsive-dialog";
@@ -20,7 +20,6 @@ import { StickyActionBar } from "@/components/ui/sticky-action-bar";
 import {
   Clock,
   AlertTriangle,
-  FileText,
   Send,
   Loader2,
   CheckCircle2,
@@ -28,21 +27,51 @@ import {
   ArrowRight,
   Info,
   Check,
-  Star,
   ChevronDown,
   ChevronUp,
   Square,
   Hand,
   PauseCircle,
+  Lock,
+  ArrowLeft,
+  CloudCheck,
+  CloudOff,
 } from "lucide-react";
 
 interface WorkInterfaceProps {
   task: Task;
   item: WorkItem;
   rateCents: number;
+  /** The contributor's server-saved draft for this item, if any. */
+  draft?: { answers: Record<string, unknown>; updatedAt: string } | null;
 }
 
-export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
+const ALL_PART = "__all";
+
+/** Meanings for the shared 1-5 clinical scale, shown in the "Rating scale" panel. */
+const SCALE_MEANINGS: Record<string, string> = {
+  Excellent: "Accurate, safe, complete, well-supported, and appropriately calibrated.",
+  Strong: "Substantially correct; only minor limitations that do not materially affect care.",
+  "Adequate / Mixed": "Partly correct, but contains meaningful gaps, weak support, or omissions.",
+  Poor: "Major errors, unsafe elements, or substantial failures in reasoning or completeness.",
+  "Very poor": "Fundamentally incorrect, misleading, or potentially dangerous.",
+};
+
+function cleanAnswers(fields: Field[], answers: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const f of fields) {
+    const v = answers[f.id];
+    if (v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
+    out[f.id] = v;
+  }
+  return out;
+}
+
+function prettyKey(key: string) {
+  return key.replace(/_/g, " ");
+}
+
+export function WorkInterface({ task, item, rateCents, draft = null }: WorkInterfaceProps) {
   const router = useRouter();
   const isHourly = task.pay_model === "hourly";
   const autoCredit = isHourly && task.auto_approve_hourly !== false;
@@ -58,21 +87,105 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
     }
   }, [clock.paused, router, task.slug]);
 
-  const fields: Field[] = Array.isArray(task.item_schema) ? task.item_schema : [];
+  const fields: Field[] = React.useMemo(
+    () => (Array.isArray(task.item_schema) ? (task.item_schema as Field[]) : []),
+    [task.item_schema]
+  );
+  const parts: Part[] = React.useMemo(() => resolveParts(fields, task.item_parts), [fields, task.item_parts]);
+  const isMultiPart = parts.length > 0;
+  // Single-page forms behave as one implicit step
+  const stepParts: Part[] = React.useMemo(
+    () => (isMultiPart ? parts : [{ id: ALL_PART, title: "Evaluation Response" }]),
+    [isMultiPart, parts]
+  );
+  const stepFields: Field[] = React.useMemo(
+    () => (isMultiPart ? fields : fields.map((f) => ({ ...f, part: ALL_PART }))),
+    [isMultiPart, fields]
+  );
   const draftKey = `draft:${item.id}`;
 
-  // Form answers state
-  const [answers, setAnswers] = React.useState<Record<string, any>>(() => {
+  // Answers: server draft first, then the local backup
+  const [answers, setAnswers] = React.useState<Record<string, unknown>>(() => {
+    if (draft?.answers && Object.keys(draft.answers).length > 0) return draft.answers;
     if (typeof window !== "undefined") {
       try {
         const saved = localStorage.getItem(draftKey);
         if (saved) return JSON.parse(saved);
-      } catch (e) {
+      } catch {
         // ignore
       }
     }
     return {};
   });
+  const [savedAt, setSavedAt] = React.useState<string | null>(draft?.updatedAt ?? null);
+  const [saveState, setSaveState] = React.useState<"idle" | "saving" | "error">("idle");
+  const dirtyRef = React.useRef(false);
+  const answersRef = React.useRef(answers);
+  React.useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
+  const persistDraft = React.useCallback(async () => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    setSaveState("saving");
+    const res = await saveDraft(item.id, answersRef.current);
+    if ("error" in res && res.error) {
+      dirtyRef.current = true;
+      setSaveState("error");
+      return;
+    }
+    setSaveState("idle");
+    if ("savedAt" in res && res.savedAt) setSavedAt(res.savedAt);
+  }, [item.id]);
+
+  // Save on the server 2 seconds after the contributor stops changing answers
+  React.useEffect(() => {
+    try {
+      localStorage.setItem(draftKey, JSON.stringify(answers));
+    } catch {
+      // ignore
+    }
+    if (!dirtyRef.current) return;
+    const t = setTimeout(() => void persistDraft(), 2000);
+    return () => clearTimeout(t);
+  }, [answers, draftKey, persistDraft]);
+
+  // Steps
+  const progress = React.useMemo(
+    () => partProgress(stepFields, stepParts, answers),
+    [stepFields, stepParts, answers]
+  );
+  const [currentPartId, setCurrentPartId] = React.useState<string>(() => {
+    const states = partProgress(stepFields, stepParts, answers);
+    return (states.find((s) => !s.complete && !s.locked) ?? states[0])?.id ?? ALL_PART;
+  });
+  const currentPart = stepParts.find((p) => p.id === currentPartId) ?? stepParts[0];
+  const currentState = progress.find((s) => s.id === currentPart.id);
+  const currentFields = stepFields.filter((f) => f.part === currentPart.id);
+  const currentIndex = stepParts.findIndex((p) => p.id === currentPart.id);
+  const allComplete = progress.every((s) => s.complete);
+
+  function goToPart(id: string) {
+    const state = progress.find((s) => s.id === id);
+    if (!state || state.locked) return;
+    void persistDraft();
+    setCurrentPartId(id);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const [flagsDialog, setFlagsDialog] = React.useState<string[] | null>(null);
+
+  const ratingScale = React.useMemo(() => {
+    const f = fields.find((x) => x.type === "rating" && x.scaleLabels?.length) as
+      | Extract<Field, { type: "rating" }>
+      | undefined;
+    if (!f?.scaleLabels) return null;
+    return f.scaleLabels
+      .map((label, i) => ({ score: f.min + i, label, meaning: SCALE_MEANINGS[label] }))
+      .reverse();
+  }, [fields]);
+  const usesClinicalScale = ratingScale?.some((r) => RATING_LABELS.includes(r.label)) ?? false;
 
   const [instructionsOpen, setInstructionsOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
@@ -119,42 +232,37 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
   };
 
   // Answer change handlers
-  const handleAnswerChange = (fieldId: string, value: any) => {
+  const handleAnswerChange = (fieldId: string, value: unknown) => {
+    dirtyRef.current = true;
     setAnswers((prev) => ({ ...prev, [fieldId]: value }));
   };
 
-  // Validate form readiness
-  const isFormValid = React.useMemo(() => {
-    for (const f of fields) {
-      if (f.required === false) continue;
-      const val = answers[f.id];
+  // Same validation the server runs at submit
+  const isFormValid = React.useMemo(
+    () => buildAnswersSchema(fields).safeParse(cleanAnswers(fields, answers)).success,
+    [fields, answers]
+  );
 
-      if (f.type === "boolean") {
-        if (typeof val !== "boolean") return false;
-      } else if (f.type === "rating") {
-        if (typeof val !== "number" || val < f.min || val > f.max) return false;
-      } else if (f.type === "select") {
-        if (!val || !(f.options || []).includes(val)) return false;
-      } else if (f.type === "multiselect") {
-        if (!Array.isArray(val) || val.length === 0) return false;
-      } else if (f.type === "text") {
-        if (!val || typeof val !== "string" || !val.trim()) return false;
-        if (f.minLength && val.trim().length < f.minLength) return false;
-      }
-    }
-    return true;
-  }, [fields, answers]);
-
-  // Submit Handler
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!isFormValid) {
-      toast.error("Please fill in all required fields before submitting.");
+      toast.error(
+        isMultiPart ? "Complete every step before submitting." : "Please fill in all required fields before submitting."
+      );
       return;
     }
+    const flags = clinicalFlags(answers);
+    if (flags.length > 0) {
+      setFlagsDialog(flags);
+      return;
+    }
+    await doSubmit();
+  }
 
+  async function doSubmit() {
+    setFlagsDialog(null);
     setSubmitting(true);
-    const res = await submitWork(task.id, item.id, answers);
+    const res = await submitWork(task.id, item.id, cleanAnswers(fields, answers));
     setSubmitting(false);
 
     if (res.error) {
@@ -163,10 +271,10 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         router.push(`/work/${task.slug}`);
       }
     } else {
-      // Clear draft
+      dirtyRef.current = false;
       try {
         localStorage.removeItem(draftKey);
-      } catch (err) {}
+      } catch {}
 
       toast.success(autoCredit ? "Work submitted. Your time has been credited." : "Work submitted for review!");
       setSuccessModal(true);
@@ -344,6 +452,30 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
             <Clock className="h-3.5 w-3.5 shrink-0" />
             <span>Hold {formatCountdown(timeLeftMs)}</span>
           </span>
+
+          {/* Draft status */}
+          <span
+            className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-[11px] font-semibold border whitespace-nowrap ${
+              saveState === "error"
+                ? "bg-destructive/10 text-destructive border-destructive/20"
+                : "bg-muted/40 text-muted-foreground border-border"
+            }`}
+          >
+            {saveState === "saving" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : saveState === "error" ? (
+              <CloudOff className="h-3 w-3" />
+            ) : (
+              <CloudCheck className="h-3 w-3" />
+            )}
+            {saveState === "saving"
+              ? "Saving…"
+              : saveState === "error"
+              ? "Not saved, retrying"
+              : savedAt
+              ? `Saved at ${new Date(savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              : "Draft not saved yet"}
+          </span>
         </div>
       </div>
 
@@ -400,210 +532,178 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         </button>
 
         {instructionsOpen && (
-          <div className="p-4 pt-1 border-t border-border/60 text-xs sm:text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap font-sans bg-muted/10 animate-in fade-in-0 duration-150">
-            {task.instructions || task.description || "Follow benchmark guidelines carefully. Evaluate each field accurately."}
+          <div className="p-4 pt-3 border-t border-border/60 text-xs sm:text-sm text-muted-foreground leading-relaxed font-sans bg-muted/10 animate-in fade-in-0 duration-150">
+            <SimpleMarkdown
+              text={task.instructions || task.description || "Follow benchmark guidelines carefully. Evaluate each field accurately."}
+            />
           </div>
         )}
       </div>
 
-      {/* 2-Column Split: Item Payload (Stacked first on mobile) & Answer Form */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
-        {/* Left Column: The Item Payload (Stacked first on mobile, Sticky on desktop) */}
-        <div className="lg:col-span-7 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-56 max-h-[calc(100dvh-15rem)] overflow-y-auto min-w-0 max-w-full">
-          <div className="flex items-center justify-between pb-3 border-b border-border/60">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Task #{item.id.slice(0, 8)}
-            </span>
-            {item.external_ref && (
-              <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[150px]">
-                Ref: {item.external_ref}
-              </span>
-            )}
-          </div>
-
-          {/* Render Item Payload with Horizontal Scroll for code/payload blocks */}
-          <div className="space-y-4 min-w-0">
-            {Object.entries(item.payload || {}).map(([key, val]) => (
-              <div key={key} className="space-y-1.5 min-w-0">
-                <span className="text-xs font-bold uppercase tracking-wider text-primary block break-words">
-                  {key.replace(/_/g, " ")}
-                </span>
-                <div className="overflow-x-auto min-w-0 max-w-full p-3.5 rounded-xl bg-muted/20 border border-border/60 text-xs sm:text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words font-sans">
-                  {typeof val === "object" ? (
-                    <pre className="font-mono text-xs overflow-x-auto whitespace-pre">
-                      {JSON.stringify(val, null, 2)}
-                    </pre>
-                  ) : (
-                    String(val)
-                  )}
+      {/* Stepper (multi-part forms) */}
+      {isMultiPart && (
+        <nav aria-label="Form steps" className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {stepParts.map((p, i) => {
+            const st = progress.find((x) => x.id === p.id)!;
+            const active = p.id === currentPart.id;
+            const reason = (p.requires ?? [])
+              .map((r) => stepParts.findIndex((x) => x.id === r) + 1)
+              .filter((n) => n > 0);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={st.locked}
+                onClick={() => goToPart(p.id)}
+                aria-current={active ? "step" : undefined}
+                className={`text-left p-3 rounded-xl border transition-colors min-w-0 ${
+                  active
+                    ? "border-primary bg-primary/5 shadow-2xs"
+                    : st.locked
+                    ? "border-border bg-muted/30 opacity-60 cursor-not-allowed"
+                    : "border-border bg-card hover:border-primary/40 cursor-pointer"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                      st.complete
+                        ? "bg-primary text-primary-foreground"
+                        : active
+                        ? "bg-primary/15 text-primary"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    {st.complete ? <Check className="h-3 w-3" /> : st.locked ? <Lock className="h-2.5 w-2.5" /> : i + 1}
+                  </span>
+                  <span className="text-[11px] font-bold text-foreground truncate">{stepShortTitle(p, i)}</span>
                 </div>
-              </div>
-            ))}
-          </div>
+                <div className="mt-1.5 h-1 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className="h-full bg-primary rounded-full transition-all"
+                    style={{ width: `${st.total ? Math.round((st.answered / st.total) * 100) : 0}%` }}
+                  />
+                </div>
+                <span className="block mt-1 text-[10px] text-muted-foreground">
+                  {st.locked
+                    ? `Finish step${reason.length > 1 ? "s" : ""} ${reason.join(" and ")} first`
+                    : `${st.answered} of ${st.total} answered`}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* 2-Column Split: the case for this step, and the form */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
+        {/* Left Column: The case (Stacked first on mobile, Sticky on desktop) */}
+        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-4 lg:sticky lg:top-56 max-h-[calc(100dvh-15rem)] overflow-y-auto min-w-0 max-w-full">
+          <CasePane item={item} part={currentPart} isMultiPart={isMultiPart} />
         </div>
 
-        {/* Right Column: Dynamic Answer Form */}
-        <div className="lg:col-span-5 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-5 min-w-0">
-          <div className="pb-3 border-b border-border/60">
-            <h3 className="font-heading font-bold text-base text-foreground">
-              Evaluation Response
-            </h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Draft auto-saves continuously. Answer all required fields to submit.
+        {/* Right Column: The form for the current step */}
+        <div className="lg:col-span-6 bg-card rounded-[14px] border border-border p-4 sm:p-6 shadow-2xs space-y-5 min-w-0">
+          <div className="pb-3 border-b border-border/60 space-y-1">
+            {isMultiPart && (
+              <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                Step {currentIndex + 1} of {stepParts.length}
+              </span>
+            )}
+            <h3 className="font-heading font-bold text-base text-foreground">{currentPart.title}</h3>
+            <p className="text-xs text-muted-foreground">
+              {currentPart.intro || "Your draft saves automatically. Answer all required fields to submit."}
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
-            {fields.map((field) => {
-              const isRequired = field.required !== false;
-              const val = answers[field.id];
+          {ratingScale && currentFields.some((f) => f.type === "rating") && (
+            <details className="group rounded-xl border border-border bg-muted/20 text-xs">
+              <summary className="flex items-center justify-between p-3 font-semibold text-foreground cursor-pointer list-none">
+                <span>Rating scale</span>
+                <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180 transition-transform" />
+              </summary>
+              <div className="px-3 pb-3 overflow-x-auto">
+                <table className="w-full text-left">
+                  <tbody>
+                    {ratingScale.map((r) => (
+                      <tr key={r.score} className="border-t border-border/50 align-top">
+                        <td className="py-1.5 pr-2 font-bold font-mono">{r.score}</td>
+                        <td className="py-1.5 pr-3 font-semibold text-foreground whitespace-nowrap">{r.label}</td>
+                        {usesClinicalScale && <td className="py-1.5 text-muted-foreground">{r.meaning}</td>}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Use the full 1–5 scale. Judge the criterion itself, not response length, confidence, formatting,
+                  or writing style alone.
+                </p>
+              </div>
+            </details>
+          )}
 
-              return (
-                <div key={field.id} className="space-y-2 min-w-0">
-                  <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1">
-                    <Label htmlFor={field.id} className="text-xs font-semibold text-foreground">
-                      {field.label} {isRequired && <span className="text-destructive">*</span>}
-                    </Label>
-                    {field.help && (
-                      <span className="text-[11px] text-muted-foreground italic">
-                        {field.help}
-                      </span>
-                    )}
-                  </div>
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {groupRuns(currentFields).map((run, ri) => (
+              <section key={`${run.group ?? "fields"}-${ri}`} className="space-y-5">
+                {run.group && (
+                  <h4 className="font-heading text-sm font-bold text-foreground pt-2 border-t border-border/60 first:border-0 first:pt-0">
+                    {run.group}
+                  </h4>
+                )}
+                {run.fields.map((field) => (
+                  <AnswerField
+                    key={field.id}
+                    field={field}
+                    value={answers[field.id]}
+                    onChange={(v) => handleAnswerChange(field.id, v)}
+                  />
+                ))}
+              </section>
+            ))}
 
-                  {/* FIELD TYPE: RATING */}
-                  {field.type === "rating" && (
-                    <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                      {Array.from({ length: field.max - field.min + 1 }).map((_, idx) => {
-                        const score = field.min + idx;
-                        const isSelected = val === score;
-
-                        return (
-                          <button
-                            key={score}
-                            type="button"
-                            onClick={() => handleAnswerChange(field.id, score)}
-                            className={`touch-target flex items-center justify-center h-11 w-11 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-                              isSelected
-                                ? "bg-primary text-primary-foreground shadow-2xs scale-105"
-                                : "bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground border border-border"
-                            }`}
-                          >
-                            {score}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* FIELD TYPE: SELECT */}
-                  {field.type === "select" && (
-                    <select
-                      id={field.id}
-                      value={val || ""}
-                      onChange={(e) => handleAnswerChange(field.id, e.target.value)}
-                      className="w-full min-h-[44px] rounded-xl border border-input bg-background px-3 text-base sm:text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                    >
-                      <option value="">Select an option...</option>
-                      {(field.options || []).map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  {/* FIELD TYPE: MULTISELECT */}
-                  {field.type === "multiselect" && (
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {(field.options || []).map((opt) => {
-                        const arr = Array.isArray(val) ? val : [];
-                        const isChecked = arr.includes(opt);
-
-                        return (
-                          <button
-                            key={opt}
-                            type="button"
-                            onClick={() => {
-                              const next = isChecked
-                                ? arr.filter((x: string) => x !== opt)
-                                : [...arr, opt];
-                              handleAnswerChange(field.id, next);
-                            }}
-                            className={`touch-target px-3.5 py-2 rounded-full text-xs font-semibold border transition-colors cursor-pointer min-h-[44px] ${
-                              isChecked
-                                ? "bg-primary text-primary-foreground border-primary"
-                                : "bg-muted/30 text-muted-foreground hover:text-foreground border-border"
-                            }`}
-                          >
-                            {opt}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* FIELD TYPE: BOOLEAN */}
-                  {field.type === "boolean" && (
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => handleAnswerChange(field.id, true)}
-                        className={`touch-target flex-1 py-3 rounded-xl text-sm font-bold border transition-all cursor-pointer min-h-[44px] ${
-                          val === true
-                            ? "bg-primary text-primary-foreground border-primary shadow-2xs"
-                            : "bg-muted/30 text-muted-foreground hover:text-foreground border-border"
-                        }`}
-                      >
-                        Yes / True
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleAnswerChange(field.id, false)}
-                        className={`touch-target flex-1 py-3 rounded-xl text-sm font-bold border transition-all cursor-pointer min-h-[44px] ${
-                          val === false
-                            ? "bg-destructive text-destructive-foreground border-destructive shadow-2xs"
-                            : "bg-muted/30 text-muted-foreground hover:text-foreground border-border"
-                        }`}
-                      >
-                        No / False
-                      </button>
-                    </div>
-                  )}
-
-                  {/* FIELD TYPE: TEXT */}
-                  {field.type === "text" && (
-                    <Textarea
-                      id={field.id}
-                      value={val || ""}
-                      onChange={(e) => handleAnswerChange(field.id, e.target.value)}
-                      placeholder="Write your detailed evaluation answer..."
-                      rows={4}
-                      className="text-base sm:text-xs bg-background leading-relaxed min-h-[100px]"
-                    />
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Desktop-only in-form submit */}
-            <div className="hidden lg:flex pt-3 border-t border-border/60 items-center justify-between gap-3">
+            {/* Step navigation + desktop submit */}
+            <div className="pt-3 border-t border-border/60 flex flex-wrap items-center justify-between gap-3">
               <span className="text-[11px] text-muted-foreground">
-                Counted time on this task: {formatClock(clock.itemSeconds)}
+                {isMultiPart && currentState
+                  ? `${currentState.answered} of ${currentState.total} answered in this step`
+                  : `Counted time on this task: ${formatClock(clock.itemSeconds)}`}
               </span>
 
-              <Button
-                type="submit"
-                disabled={submitting || !isFormValid}
-                className="rounded-full text-xs font-bold gap-2 h-10 px-6 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs"
-              >
-                {submitting ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Send className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-2">
+                {isMultiPart && currentIndex > 0 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => goToPart(stepParts[currentIndex - 1].id)}
+                    className="rounded-full text-xs font-semibold gap-1.5 h-10 px-4"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    Back
+                  </Button>
                 )}
-                <span>Submit Evaluation</span>
-              </Button>
+                {isMultiPart && currentIndex < stepParts.length - 1 ? (
+                  <Button
+                    type="button"
+                    disabled={Boolean(progress[currentIndex + 1]?.locked)}
+                    onClick={() => goToPart(stepParts[currentIndex + 1].id)}
+                    title={progress[currentIndex + 1]?.locked ? "Complete the earlier steps first" : undefined}
+                    className="rounded-full text-xs font-bold gap-1.5 h-10 px-5"
+                  >
+                    Next step
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    disabled={submitting || !allComplete}
+                    className="hidden lg:inline-flex rounded-full text-xs font-bold gap-2 h-10 px-6 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs"
+                  >
+                    {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    <span>Submit Evaluation</span>
+                  </Button>
+                )}
+              </div>
             </div>
           </form>
         </div>
@@ -632,8 +732,8 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
 
           <Button
             type="button"
-            onClick={handleSubmit}
-            disabled={submitting || !isFormValid}
+            onClick={() => handleSubmit()}
+            disabled={submitting || !allComplete}
             className="touch-target rounded-full text-xs font-bold gap-2 px-5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-2xs min-h-[44px]"
           >
             {submitting ? (
@@ -694,6 +794,47 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         </div>
       </ResponsiveDialog>
 
+      {/* Consistency warnings before submit */}
+      <ResponsiveDialog
+        open={Boolean(flagsDialog)}
+        onOpenChange={(o) => !o && setFlagsDialog(null)}
+        title="Please double-check these answers"
+        description="Some answers look inconsistent. You can still submit; the reviewer will see these notes."
+        footer={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFlagsDialog(null)}
+              className="touch-target w-full sm:w-auto rounded-full text-xs font-semibold min-h-[44px]"
+            >
+              Go back and check
+            </Button>
+            <Button
+              size="sm"
+              disabled={submitting}
+              onClick={() => void doSubmit()}
+              className="touch-target w-full sm:w-auto rounded-full text-xs font-bold gap-1.5 min-h-[44px]"
+            >
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Submit anyway
+            </Button>
+          </>
+        }
+      >
+        <ul className="py-2 space-y-2">
+          {(flagsDialog || []).map((f) => (
+            <li
+              key={f}
+              className="flex items-start gap-2 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-xs text-amber-900 dark:text-amber-200"
+            >
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{f}</span>
+            </li>
+          ))}
+        </ul>
+      </ResponsiveDialog>
+
       {/* Presence check (hourly) */}
       <ResponsiveDialog
         open={clock.paused === "needs_presence"}
@@ -720,5 +861,73 @@ export function WorkInterface({ task, item, rateCents }: WorkInterfaceProps) {
         </div>
       </ResponsiveDialog>
     </div>
+  );
+}
+
+function stepShortTitle(part: Part, index: number) {
+  const known: Record<string, string> = {
+    part1: "Response A",
+    part2: "Response B",
+    part3: "Comparison",
+    signoff: "Sign-off",
+  };
+  return known[part.id] ?? (part.title.length > 28 ? `Step ${index + 1}` : part.title);
+}
+
+/** The case for the current step: only the payload keys the step lists in `show`. */
+function CasePane({ item, part, isMultiPart }: { item: WorkItem; part: Part; isMultiPart: boolean }) {
+  const payload = (item.payload || {}) as Record<string, unknown>;
+  // During a step, hide only the response(s) the step doesn't list, so each
+  // evaluation stays independent; any other case content is always shown.
+  const hidden =
+    isMultiPart && part.show?.length
+      ? ["response_a", "response_b"].filter((k) => !part.show!.includes(k))
+      : [];
+  const keys = Object.keys(payload).filter((k) => !hidden.includes(k));
+  const hasPair = keys.includes("response_a") && keys.includes("response_b");
+  const caseId = typeof payload.case_id === "string" ? payload.case_id : null;
+
+  const block = (key: string) => {
+    const val = payload[key];
+    return (
+      <div key={key} className="space-y-1.5 min-w-0">
+        <span className="text-xs font-bold uppercase tracking-wider text-primary block break-words">
+          {key === "prompt" ? "User prompt" : key === "response_a" ? "Response A" : key === "response_b" ? "Response B" : prettyKey(key)}
+        </span>
+        <div className="overflow-x-auto min-w-0 max-w-full p-3.5 rounded-xl bg-muted/20 border border-border/60 text-xs sm:text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words font-sans">
+          {typeof val === "object" && val !== null ? (
+            <pre className="font-mono text-xs overflow-x-auto whitespace-pre">{JSON.stringify(val, null, 2)}</pre>
+          ) : (
+            String(val ?? "")
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const rest = keys.filter((k) => !(hasPair && (k === "response_a" || k === "response_b")) && k !== "case_id");
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border/60">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          {caseId ? `Case ${caseId}` : `Task #${item.id.slice(0, 8)}`}
+        </span>
+        {item.external_ref && (
+          <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[150px]">
+            Ref: {item.external_ref}
+          </span>
+        )}
+      </div>
+      <div className="space-y-4 min-w-0">
+        {rest.map(block)}
+        {hasPair && (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 min-w-0">
+            {block("response_a")}
+            {block("response_b")}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

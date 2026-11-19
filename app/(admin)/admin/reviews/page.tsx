@@ -24,6 +24,7 @@ export default async function AdminReviewsPage() {
       reviewer_note,
       reviewed_at,
       earning_cents,
+      flags,
       created_at,
       task:tasks (
         id,
@@ -33,7 +34,8 @@ export default async function AdminReviewsPage() {
         rate_cents,
         item_schema,
         pay_model,
-        max_credited_seconds_per_item
+        max_credited_seconds_per_item,
+        item_parts
       ),
       profile:profiles!submissions_user_id_fkey (
         id,

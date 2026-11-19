@@ -18,6 +18,7 @@ const MESSAGES: Record<string, string> = {
   empty_batch: "Add items before publishing.",
   task_not_ready: "Set the answer form and pay rate before publishing.",
   not_found: "That record no longer exists.",
+  invalid_draft: "That draft could not be saved.",
 };
 
 export const mapRpcError = (msg?: string) => {
