@@ -9,6 +9,8 @@ import {
   adminUpdateUserProfile,
   adminSendNotification,
   adminDeleteUser,
+  suspendUserAccount,
+  reinstateUserAccount,
 } from "@/actions/users";
 import { setApplicationStatus } from "@/actions/applications";
 import { profileCompleteness, parseEducation, parseExperience } from "@/lib/profile";
@@ -43,6 +45,8 @@ import {
   FileText,
   Zap,
   Check,
+  Ban,
+  RotateCcw,
 } from "lucide-react";
 
 interface UserDetailViewProps {
@@ -99,6 +103,11 @@ export function UserDetailView({
 
   // Delete user loading
   const [deletingUser, setDeletingUser] = React.useState(false);
+
+  // Suspension
+  const [suspendReason, setSuspendReason] = React.useState("");
+  const [suspensionLoading, setSuspensionLoading] = React.useState(false);
+  const isSuspended = Boolean(user.suspended_at);
 
   const isCurrentAdmin = user.id === currentUserId;
   const displayName = user.full_name || user.email.split("@")[0] || "Contributor";
@@ -217,6 +226,56 @@ export function UserDetailView({
     }
   };
 
+  // Suspend / Reinstate Handlers
+  const handleSuspend = async () => {
+    if (
+      !confirm(
+        `Suspend ${displayName}'s account? They will be signed out, blocked from the platform, and emailed a termination notice.`
+      )
+    ) {
+      return;
+    }
+    setSuspensionLoading(true);
+    const res = await suspendUserAccount(user.id, suspendReason.trim() || undefined);
+    setSuspensionLoading(false);
+
+    if (res.error) {
+      toast.error("Could not suspend account", { description: res.error });
+    } else {
+      toast.success("Account suspended", { description: res.message });
+      setUser((prev) => ({
+        ...prev,
+        suspended_at: new Date().toISOString(),
+        suspended_by: currentUserId,
+        suspension_reason: suspendReason.trim() || null,
+      }));
+      setSuspendReason("");
+      router.refresh();
+    }
+  };
+
+  const handleReinstate = async () => {
+    if (!confirm(`Reinstate ${displayName}'s account? They will be able to sign in again.`)) {
+      return;
+    }
+    setSuspensionLoading(true);
+    const res = await reinstateUserAccount(user.id);
+    setSuspensionLoading(false);
+
+    if (res.error) {
+      toast.error("Could not reinstate account", { description: res.error });
+    } else {
+      toast.success("Account reinstated", { description: res.message });
+      setUser((prev) => ({
+        ...prev,
+        suspended_at: null,
+        suspended_by: null,
+        suspension_reason: null,
+      }));
+      router.refresh();
+    }
+  };
+
   // Delete User Handler
   const handleDeleteUser = async () => {
     if (
@@ -273,6 +332,23 @@ export function UserDetailView({
           </span>
         </div>
       </div>
+
+      {isSuspended && (
+        <div className="flex items-start gap-3 p-4 rounded-[14px] border border-destructive/30 bg-destructive/5 text-xs">
+          <Ban className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-bold text-destructive">
+              Account suspended on {formatDate(user.suspended_at!)}
+            </p>
+            <p className="text-muted-foreground">
+              {user.suspension_reason
+                ? `Internal reason: ${user.suspension_reason}`
+                : "No internal reason recorded."}{" "}
+              Manage this from the Admin Actions tab.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Main Dossier Card Banner */}
       <div className="bg-card rounded-[14px] border border-border p-6 shadow-2xs space-y-6">
@@ -775,6 +851,91 @@ export function UserDetailView({
                 </Button>
               )}
             </div>
+          </div>
+
+          {/* Account Suspension */}
+          <div
+            className={`bg-card rounded-[14px] border p-5 shadow-2xs space-y-4 ${
+              isSuspended ? "border-destructive/30" : "border-border"
+            }`}
+          >
+            <div>
+              <h4 className="font-heading text-sm font-bold text-foreground flex items-center gap-1.5">
+                <Ban className="h-4 w-4 text-destructive" />
+                Account Suspension
+              </h4>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Current status:{" "}
+                <strong className={isSuspended ? "text-destructive" : "text-foreground"}>
+                  {isSuspended ? `Suspended since ${formatDate(user.suspended_at!)}` : "Active"}
+                </strong>
+              </p>
+            </div>
+
+            {isSuspended ? (
+              <>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  This contributor is blocked from signing in and sees the suspension screen.
+                  Reinstating restores their login and data; no email is sent.
+                </p>
+                <div className="pt-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={suspensionLoading}
+                    onClick={handleReinstate}
+                    className="rounded-full text-xs font-bold gap-1.5 h-8 px-4"
+                  >
+                    {suspensionLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    )}
+                    <span>Reinstate Account</span>
+                  </Button>
+                </div>
+              </>
+            ) : isCurrentAdmin ? (
+              <p className="text-xs text-muted-foreground italic">
+                Security guard: You cannot suspend your own administrator account.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Deactivates the account immediately: the contributor is signed out, blocked
+                  from the platform, and emailed a contract termination notice. Their data is kept.
+                </p>
+                <div className="space-y-1">
+                  <Label htmlFor="suspend_reason" className="text-xs font-semibold">
+                    Internal reason (admins only, not emailed)
+                  </Label>
+                  <Textarea
+                    id="suspend_reason"
+                    value={suspendReason}
+                    onChange={(e) => setSuspendReason(e.target.value)}
+                    placeholder="e.g. Repeated copy-pasted AI answers on the Clinical batch."
+                    className="text-xs bg-background"
+                    rows={2}
+                  />
+                </div>
+                <div className="pt-1">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={suspensionLoading}
+                    onClick={handleSuspend}
+                    className="rounded-full text-xs font-bold gap-1.5 h-8 px-4"
+                  >
+                    {suspensionLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Ban className="h-3.5 w-3.5" />
+                    )}
+                    <span>Suspend Account</span>
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Danger Zone: Account Deletion */}

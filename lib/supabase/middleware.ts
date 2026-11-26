@@ -63,6 +63,15 @@ export async function updateSession(request: NextRequest) {
     !process.env.NEXT_PUBLIC_SUPABASE_URL.includes("your-project");
 
   if (hasRealKeys) {
+    // Suspended accounts can reach nothing but the suspension notice.
+    // getUser() reads auth server-side, so this applies the moment an admin suspends.
+    if (user?.app_metadata?.suspended === true && pathname !== "/suspended") {
+      const url = request.nextUrl.clone();
+      url.pathname = "/suspended";
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+
     if (!user && (isAppRoute || isAdminRoute)) {
       const url = request.nextUrl.clone();
       url.pathname = "/login";

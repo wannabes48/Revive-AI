@@ -7,6 +7,7 @@ import {
   projectAvailabilityReminderEmail,
   accountApprovedEmail,
   accountRejectedEmail,
+  accountSuspendedEmail,
   kycStatusEmail,
   assessmentFailedEmail,
   newTaskAvailableEmail,
@@ -284,6 +285,19 @@ export async function notifyAccountRejected(userId: string, reason?: string | nu
     notificationKey: "account_rejected",
     subject: "An update on your Revive AI application",
     html: accountRejectedEmail(recipient.name, reason),
+  });
+}
+
+/** One email per suspension; `suspendedAt` scopes it so a later re-suspension emails again. */
+export async function notifyAccountSuspended(userId: string, suspendedAt: string) {
+  const recipient = await getRecipient(userId);
+  if (!recipient) return { success: false, error: "User has no email address." };
+  return dispatchDeduplicatedEmail({
+    userId,
+    to: recipient.email,
+    notificationKey: `account_suspended_${suspendedAt}`,
+    subject: "Your Revive AI account has been deactivated",
+    html: accountSuspendedEmail(),
   });
 }
 

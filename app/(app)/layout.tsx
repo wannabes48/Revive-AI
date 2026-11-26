@@ -29,6 +29,10 @@ export default async function AppLayout({
       .is("read_at", null),
   ]);
 
+  if ((profile as any)?.suspended_at) {
+    redirect("/suspended");
+  }
+
   const approvalStatus =
     (profile as any)?.approval_status ||
     user.user_metadata?.approval_status ||

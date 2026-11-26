@@ -4,7 +4,11 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/server";
 import { UserRole } from "@/lib/supabase/types";
-import { notifyAccountApproved, notifyAccountRejected } from "@/lib/emails/automation";
+import {
+  notifyAccountApproved,
+  notifyAccountRejected,
+  notifyAccountSuspended,
+} from "@/lib/emails/automation";
 
 export type UserActionResult = {
   success?: boolean;
@@ -162,6 +166,90 @@ export async function adminDeleteUser(userId: string): Promise<UserActionResult>
   revalidatePath("/admin/users");
   revalidatePath("/admin");
   return { success: true, message: "User account deleted successfully." };
+}
+
+// ~100 years: Supabase Auth has no "forever" ban, so this is effectively permanent.
+const PERMANENT_BAN = "876000h";
+
+/**
+ * Suspends (deactivates) a contributor: flags the profile, bans the auth user so
+ * no new sessions or token refreshes succeed, and emails the termination notice.
+ * `reason` is an internal admin note and is never shown to the contributor.
+ */
+export async function suspendUserAccount(
+  userId: string,
+  reason?: string
+): Promise<UserActionResult> {
+  const { user } = await requireAdmin();
+
+  if (user.id === userId) {
+    return { error: "Security restriction: You cannot suspend your own administrator account." };
+  }
+
+  const adminClient = createAdminClient();
+  const suspendedAt = new Date().toISOString();
+
+  const { error: profileError } = await adminClient
+    .from("profiles")
+    .update({
+      suspended_at: suspendedAt,
+      suspended_by: user.id,
+      suspension_reason: reason?.trim() || null,
+    })
+    .eq("id", userId);
+  if (profileError) {
+    return { error: `Could not suspend account (is migration 016 applied?): ${profileError.message}` };
+  }
+
+  const { error: authError } = await adminClient.auth.admin.updateUserById(userId, {
+    ban_duration: PERMANENT_BAN,
+    app_metadata: { suspended: true },
+  });
+  if (authError) {
+    // Roll back so the profile flag never claims a suspension that auth isn't enforcing.
+    await adminClient
+      .from("profiles")
+      .update({ suspended_at: null, suspended_by: null, suspension_reason: null })
+      .eq("id", userId);
+    return { error: `Could not deactivate the login: ${authError.message}` };
+  }
+
+  const emailResult = await notifyAccountSuspended(userId, suspendedAt);
+
+  revalidatePath("/admin/users");
+  revalidatePath(`/admin/users/${userId}`);
+  revalidatePath("/admin");
+
+  if (!emailResult.success && !emailResult.skipped) {
+    return {
+      success: true,
+      message: `Account suspended, but the notice email failed: ${emailResult.error || "unknown error"}.`,
+    };
+  }
+  return { success: true, message: "Account suspended and the contributor has been emailed." };
+}
+
+/** Lifts a suspension: clears the profile flag and the auth ban. Sends no email. */
+export async function reinstateUserAccount(userId: string): Promise<UserActionResult> {
+  await requireAdmin();
+  const adminClient = createAdminClient();
+
+  const { error: authError } = await adminClient.auth.admin.updateUserById(userId, {
+    ban_duration: "none",
+    app_metadata: { suspended: false },
+  });
+  if (authError) return { error: `Could not restore the login: ${authError.message}` };
+
+  const { error: profileError } = await adminClient
+    .from("profiles")
+    .update({ suspended_at: null, suspended_by: null, suspension_reason: null })
+    .eq("id", userId);
+  if (profileError) return { error: profileError.message };
+
+  revalidatePath("/admin/users");
+  revalidatePath(`/admin/users/${userId}`);
+  revalidatePath("/admin");
+  return { success: true, message: "Account reinstated. The contributor can sign in again." };
 }
 
 export async function approveUserAccount(userId: string): Promise<UserActionResult> {

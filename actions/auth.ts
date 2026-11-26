@@ -156,7 +156,16 @@ export async function signInAction(
   });
 
   if (error) {
+    // Suspension bans the auth user, so sign-in fails with "user_banned".
+    if (error.code === "user_banned" || /banned/i.test(error.message)) {
+      redirect("/suspended");
+    }
     return { error: error.message };
+  }
+
+  if (data.user?.app_metadata?.suspended === true) {
+    await supabase.auth.signOut();
+    redirect("/suspended");
   }
 
   // Determine user destination based on role and admin approval status

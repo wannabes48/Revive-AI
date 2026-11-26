@@ -74,6 +74,9 @@ export interface Profile {
   resume_path?: string | null;
   resume_filename?: string | null;
   resume_uploaded_at?: string | null;
+  suspended_at?: string | null;
+  suspended_by?: string | null;
+  suspension_reason?: string | null;
   created_at: string;
 }
 

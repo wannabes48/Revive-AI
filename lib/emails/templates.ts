@@ -687,7 +687,27 @@ export function accountRejectedEmail(name: string, reason?: string | null): stri
   });
 }
 
-export type KycEmailKind = "submitted" | "rejected" | "resubmission_requested" | "reset";
+/**
+ * Sent when an admin suspends (permanently deactivates) a contributor account.
+ * The wording is fixed by policy; the admin's internal reason is never included.
+ */
+export function accountSuspendedEmail(): string {
+  return renderLayout({
+    title: "Account Deactivated",
+    badge: { tone: "red", label: "Account deactivated" },
+    heading: "Your contract has been terminated",
+    bodyHtml: `
+      <p class="lead">Dear Contributor,</p>
+      <p>Following a thorough review of your account activity, we have identified violations of our Terms of Use and Community Guidelines.</p>
+      <p>As a result, we have made the decision to permanently terminate your contract and deactivate your account, effective immediately.</p>
+      <p>This decision has been carefully reviewed and is final. Consequently, you will no longer be eligible to access the platform or participate in further projects.</p>
+      <p>We appreciate your previous contributions and thank you for your understanding.</p>
+      <p>Regards,<br>Revive AI Support Team</p>`,
+    footerHtml: `Revive AI &bull; Trust &amp; Safety`,
+  });
+}
+
+export type KycEmailKind ="submitted" | "rejected" | "resubmission_requested" | "reset";
 
 /**
  * KYC lifecycle emails other than approval (approval uses onboardingStepCompletedEmail).
